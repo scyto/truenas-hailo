@@ -58,6 +58,7 @@ jobs:
         with:
           path: /tmp/truenas.iso
           key: truenas-iso-${{ inputs.truenas_version }}
+          save-always: true
 
       - name: Download TrueNAS ISO
         run: |
