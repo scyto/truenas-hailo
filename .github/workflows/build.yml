@@ -341,7 +341,14 @@ jobs:
 
           # --- HailoRT shared library ---
           mkdir -p "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
-          LIBHAILORT=$(find /tmp/hailort/build -name "libhailort.so*" -not -type l | head -1)
+          # Find the actual ELF shared library (not a linker script)
+          LIBHAILORT=""
+          for candidate in $(find /tmp/hailort/build -name "libhailort.so*" -not -type l); do
+            if file "$candidate" | grep -q "ELF"; then
+              LIBHAILORT="$candidate"
+              break
+            fi
+          done
           if [ -n "$LIBHAILORT" ]; then
             cp "$LIBHAILORT" "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu/"
             LIBNAME=$(basename "$LIBHAILORT")
@@ -356,11 +363,23 @@ jobs:
           fi
 
           # --- HailoRT CLI ---
+          # CMake generates a shell wrapper script alongside the real binary.
+          # We must find the actual ELF binary, not the wrapper.
           mkdir -p "${SYSEXT_ROOT}/usr/bin"
-          HAILORT_CLI=$(find /tmp/hailort/build -name "hailortcli" -type f | head -1)
+          HAILORT_CLI=""
+          for candidate in $(find /tmp/hailort/build -name "hailortcli" -type f); do
+            if file "$candidate" | grep -q "ELF"; then
+              HAILORT_CLI="$candidate"
+              break
+            fi
+          done
           if [ -n "$HAILORT_CLI" ]; then
+            echo "Found hailortcli ELF binary: $HAILORT_CLI"
             cp "$HAILORT_CLI" "${SYSEXT_ROOT}/usr/bin/hailortcli"
             chmod +x "${SYSEXT_ROOT}/usr/bin/hailortcli"
+          else
+            echo "WARNING: No ELF hailortcli binary found, listing candidates:"
+            find /tmp/hailort/build -name "hailortcli" -type f -exec file {} \;
           fi
 
           # --- systemd service ---
