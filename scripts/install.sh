@@ -289,7 +289,10 @@ cat > "${PERSIST_DIR}/hailo-preinit.sh" <<'PREINIT_EOF'
 
 set -uo pipefail
 
-log() { echo "[hailo-preinit] $*"; }
+log() {
+    echo "[hailo-preinit] $*"
+    logger -t hailo-preinit "$*" 2>/dev/null || true
+}
 
 # --- Find persistent config via glob ---
 PERSIST_DIR=""
@@ -355,12 +358,21 @@ ln -sf "$SYSEXT_TARGET" /run/extensions/hailo.raw
 systemd-sysext refresh
 ldconfig
 
-log "Loading Hailo module..."
+# --- Check kernel version matches the module in the sysext ---
 HAILO_KO="/usr/lib/modules/$(uname -r)/extra/hailo_pci.ko"
 if [ -f "$HAILO_KO" ]; then
+    log "Loading Hailo module..."
     insmod "$HAILO_KO" || log "WARNING: insmod hailo_pci failed (device may not be present)"
 else
-    log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
+    # Module path doesn't match running kernel — likely a TrueNAS update changed the kernel
+    SYSEXT_KVER=$(ls /usr/lib/modules/ 2>/dev/null | grep -v "$(uname -r)" | head -1)
+    if [ -n "$SYSEXT_KVER" ]; then
+        log "ERROR: Kernel version mismatch — running $(uname -r) but sysext has module for ${SYSEXT_KVER}"
+        log "ERROR: TrueNAS was likely updated. Download a new hailo.raw release matching $(uname -r)"
+        log "ERROR: Visit https://github.com/scyto/truenas-hailo/releases"
+    else
+        log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
+    fi
 fi
 
 log "Done"
