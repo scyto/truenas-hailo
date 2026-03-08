@@ -453,7 +453,7 @@ jobs:
 
             ### Verify
             ```bash
-            hailortcli fw-control --identify
+            hailortcli fw-control identify
             ls -la /dev/hailo*
             ```
 

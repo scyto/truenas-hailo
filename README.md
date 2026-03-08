@@ -42,11 +42,32 @@ curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/insta
 sudo bash install.sh --pool=fast
 ```
 
-With a local `hailo.raw` file (e.g., downloaded manually):
+> **Version matching:** Each release is built for a specific TrueNAS kernel. The install script
+> auto-detects your TrueNAS version and downloads the correct release. If no matching release
+> exists for your version, the script will error with a list of available releases.
+
+#### Installing a Specific Version
+
+Release tags encode both versions: `v<truenas>-hailo<driver>` (e.g., `v25.10.2.1-hailo4.21.0`).
+
+To install from a specific release:
 
 ```bash
-sudo bash install.sh /path/to/hailo.raw
+# Download install.sh from a specific release tag
+curl -fsSL https://github.com/scyto/truenas-hailo/releases/download/v25.10.2.1-hailo4.21.0/install.sh | sudo bash
 ```
+
+Or download `hailo.raw` manually and install it:
+
+```bash
+# Download hailo.raw from a specific release
+curl -fSL https://github.com/scyto/truenas-hailo/releases/download/v25.10.2.1-hailo4.21.0/hailo.raw -o /tmp/hailo.raw
+sudo bash install.sh /tmp/hailo.raw
+```
+
+> **Warning:** Using a `hailo.raw` built for a different TrueNAS version will fail to load
+> the kernel module. The module is compiled against exact kernel headers — a version mismatch
+> means `insmod` will refuse to load it. Always use the release matching your TrueNAS version.
 
 #### Install Options
 
@@ -220,13 +241,30 @@ Two weekly GitHub Actions workflows monitor for updates:
 - Secure Boot: The unsigned kernel module may require disabling Secure Boot.
 - If firmware download fails during installation, the script aborts — the sysext will not be installed without firmware.
 
-## Building Locally
+## Custom Builds
 
-To trigger a build manually:
+If you need a build for a TrueNAS version or HailoRT version that doesn't have a pre-built release, you can build your own using GitHub Actions — no local build environment needed.
 
-1. Go to **Actions** > **Build Hailo Sysext** > **Run workflow**
-2. Set the TrueNAS version, HailoRT version, and train name
-3. The workflow produces `hailo.raw` as both an artifact and a GitHub release
+### Fork and Build
+
+1. **Fork** this repository on GitHub
+2. Go to **Actions** > **Build Hailo Sysext** > **Run workflow**
+3. Fill in the parameters:
+   - **TrueNAS version** — e.g., `25.10.2.1` (must match an existing TrueNAS ISO on the download server)
+   - **HailoRT driver version** — e.g., `4.21.0` (must match a tag in [hailo-ai/hailort-drivers](https://github.com/hailo-ai/hailort-drivers))
+   - **Train name** — e.g., `Goldeye` (cosmetic, used in release title)
+4. The workflow builds `hailo.raw` and creates a GitHub release in your fork (~15-30 min, ~5 min cached)
+5. Use the install script from your fork's release, or download `hailo.raw` and install manually
+
+### When to Build Custom
+
+- **New TrueNAS release** not yet covered by a pre-built release (the Monday check workflow usually catches these within a week)
+- **Different HailoRT version** — you want to test a newer or older driver version
+- **Modified build** — you've forked the repo to change build options, add patches, etc.
+
+### Version Defaults
+
+The workflow inputs have defaults set to the most recently tested versions. The `version` and `.hailo-driver-version` files in the repo track what the automated workflows use. Update these if you want `workflow_dispatch` defaults to match your target.
 
 ## Architecture
 
