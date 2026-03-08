@@ -240,35 +240,9 @@ jobs:
           echo "=== Built artifacts ==="
           find . -name "libhailort*" -o -name "hailortcli" | head -20
 
-      # ── Download firmware ──
-      - name: Download Hailo-8 firmware
-        run: |
-          cd /tmp/hailort-drivers
-          if [ -f download_firmware.sh ]; then
-            chmod +x download_firmware.sh
-            ./download_firmware.sh
-            FW_FILE=$(find . -name "hailo8_fw*.bin" -type f | head -1)
-            if [ -n "$FW_FILE" ]; then
-              cp "$FW_FILE" /tmp/hailo8_fw.bin
-              echo "Firmware downloaded: $(ls -lh /tmp/hailo8_fw.bin)"
-            else
-              echo "ERROR: Firmware download script ran but no .bin found"
-              find . -name "*.bin" -type f || true
-              exit 1
-            fi
-          else
-            echo "WARNING: download_firmware.sh not found, checking for bundled firmware..."
-            FW_FILE=$(find /tmp/hailort-drivers /tmp/hailort -name "hailo8_fw*.bin" -type f 2>/dev/null | head -1)
-            if [ -n "$FW_FILE" ]; then
-              cp "$FW_FILE" /tmp/hailo8_fw.bin
-              echo "Found bundled firmware: $(ls -lh /tmp/hailo8_fw.bin)"
-            else
-              echo "ERROR: No firmware found. Cannot build functional sysext."
-              exit 1
-            fi
-          fi
-
       # ── Assemble sysext ──
+      # NOTE: Firmware (hailo8_fw.bin) is NOT included in the sysext.
+      # It is proprietary and downloaded directly from Hailo at install time.
       - name: Assemble sysext filesystem tree
         run: |
           SYSEXT_ROOT="/tmp/hailo-sysext"
@@ -282,12 +256,6 @@ jobs:
           MOD_DIR="${SYSEXT_ROOT}/usr/lib/modules/${KVER}/extra"
           mkdir -p "$MOD_DIR"
           cp /tmp/hailort-drivers/linux/pcie/hailo_pci.ko "$MOD_DIR/"
-
-          # --- Firmware ---
-          if [ -f /tmp/hailo8_fw.bin ]; then
-            mkdir -p "${SYSEXT_ROOT}/usr/lib/firmware/hailo"
-            cp /tmp/hailo8_fw.bin "${SYSEXT_ROOT}/usr/lib/firmware/hailo/hailo8_fw.bin"
-          fi
 
           # --- HailoRT shared library ---
           mkdir -p "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
@@ -365,9 +333,11 @@ jobs:
             - `hailo_pci.ko` — PCIe kernel module (compiled for this TrueNAS kernel)
             - `libhailort.so` — HailoRT runtime library
             - `hailortcli` — HailoRT command-line tool
-            - `hailo8_fw.bin` — Device firmware
             - `hailo-load.service` — Systemd service for automatic module loading
             - `51-hailo-udev.rules` — Udev rules for device permissions
+
+            > **Note:** Hailo-8 firmware (`hailo8_fw.bin`) is proprietary and downloaded
+            > directly from Hailo's servers during installation. It is not included in this release.
 
             ### Install
             ```bash

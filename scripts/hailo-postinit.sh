@@ -66,6 +66,31 @@ fi
 log "Merging sysext..."
 systemd-sysext merge
 
+# --- Restore firmware if missing ---
+FW_DIR="/lib/firmware/hailo"
+FW_PATH="${FW_DIR}/hailo8_fw.bin"
+if [ ! -f "$FW_PATH" ]; then
+    log "Firmware missing at ${FW_PATH}, restoring..."
+    mkdir -p "$FW_DIR"
+    if [ -f "${PERSIST_DIR}/hailo8_fw.bin" ]; then
+        cp "${PERSIST_DIR}/hailo8_fw.bin" "$FW_PATH"
+        log "Firmware restored from backup"
+    elif [ -f "${PERSIST_DIR}/.hailo-driver-version" ]; then
+        HAILO_VER=$(cat "${PERSIST_DIR}/.hailo-driver-version" | tr -d '[:space:]')
+        FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_VER}/FW/hailo8_fw.${HAILO_VER}.bin"
+        log "Downloading firmware v${HAILO_VER} from Hailo..."
+        if curl -fSL "$FW_URL" -o "$FW_PATH" 2>/dev/null && [ -s "$FW_PATH" ]; then
+            log "Firmware downloaded successfully"
+            cp "$FW_PATH" "${PERSIST_DIR}/hailo8_fw.bin" 2>/dev/null || true
+        else
+            log "WARNING: Failed to download firmware from ${FW_URL}"
+            rm -f "$FW_PATH"
+        fi
+    else
+        log "WARNING: No firmware backup or version info available"
+    fi
+fi
+
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload
 depmod -a || log "WARNING: depmod failed"

@@ -142,6 +142,40 @@ zfs set readonly=on "${USR_DATASET}"
 echo "Merging sysext..."
 systemd-sysext merge
 
+# --- Download Hailo-8 firmware from Hailo's servers ---
+# Firmware is proprietary and not included in the sysext.
+echo ""
+echo "=== Downloading Hailo-8 firmware ==="
+
+# Determine HailoRT version from release tag or .hailo-driver-version
+HAILO_VERSION=""
+if [ -n "${RELEASE_TAG:-}" ]; then
+    # Extract version from tag like v25.10.2.1-hailo4.20.0
+    HAILO_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*hailo\([0-9.]*\)$/\1/p')
+fi
+if [ -z "$HAILO_VERSION" ]; then
+    # Fallback: try to read from the repo's .hailo-driver-version
+    HAILO_VERSION=$(curl -sf "https://raw.githubusercontent.com/${REPO}/main/.hailo-driver-version" | tr -d '[:space:]') || true
+fi
+if [ -z "$HAILO_VERSION" ]; then
+    echo "WARNING: Could not determine HailoRT version, defaulting to 4.20.0"
+    HAILO_VERSION="4.20.0"
+fi
+
+echo "HailoRT version: ${HAILO_VERSION}"
+FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_VERSION}/FW/hailo8_fw.${HAILO_VERSION}.bin"
+FW_DIR="/lib/firmware/hailo"
+
+mkdir -p "$FW_DIR"
+echo "Downloading firmware from Hailo..."
+if curl -fSL "$FW_URL" -o "${FW_DIR}/hailo8_fw.bin"; then
+    [ -s "${FW_DIR}/hailo8_fw.bin" ] || { echo "ERROR: Downloaded firmware is empty"; rm -f "${FW_DIR}/hailo8_fw.bin"; }
+    echo "Firmware installed: $(ls -lh "${FW_DIR}/hailo8_fw.bin")"
+else
+    echo "WARNING: Failed to download firmware from ${FW_URL}"
+    echo "  You may need to manually place hailo8_fw.bin in ${FW_DIR}/"
+fi
+
 # Load the kernel module
 echo "Loading Hailo kernel module..."
 depmod -a || echo "WARNING: depmod failed"
@@ -192,9 +226,17 @@ fi
 echo "Persistent config directory: ${PERSIST_DIR}"
 mkdir -p "$PERSIST_DIR"
 
-# --- Backup hailo.raw to persistent storage ---
+# --- Backup hailo.raw and firmware to persistent storage ---
 echo "Backing up hailo.raw to persistent storage..."
 cp /tmp/hailo.raw "${PERSIST_DIR}/hailo.raw"
+
+if [ -f "${FW_DIR}/hailo8_fw.bin" ]; then
+    echo "Backing up firmware to persistent storage..."
+    cp "${FW_DIR}/hailo8_fw.bin" "${PERSIST_DIR}/hailo8_fw.bin"
+fi
+
+# Save HailoRT version for postinit firmware recovery
+echo -n "$HAILO_VERSION" > "${PERSIST_DIR}/.hailo-driver-version"
 
 # --- Write POSTINIT script to persistent storage ---
 # NOTE: This is an inline copy of scripts/hailo-postinit.sh.
@@ -266,6 +308,31 @@ fi
 log "Merging sysext..."
 systemd-sysext merge
 
+# --- Restore firmware if missing ---
+FW_DIR="/lib/firmware/hailo"
+FW_PATH="${FW_DIR}/hailo8_fw.bin"
+if [ ! -f "$FW_PATH" ]; then
+    log "Firmware missing at ${FW_PATH}, restoring..."
+    mkdir -p "$FW_DIR"
+    if [ -f "${PERSIST_DIR}/hailo8_fw.bin" ]; then
+        cp "${PERSIST_DIR}/hailo8_fw.bin" "$FW_PATH"
+        log "Firmware restored from backup"
+    elif [ -f "${PERSIST_DIR}/.hailo-driver-version" ]; then
+        HAILO_VER=$(cat "${PERSIST_DIR}/.hailo-driver-version" | tr -d '[:space:]')
+        FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_VER}/FW/hailo8_fw.${HAILO_VER}.bin"
+        log "Downloading firmware v${HAILO_VER} from Hailo..."
+        if curl -fSL "$FW_URL" -o "$FW_PATH" 2>/dev/null && [ -s "$FW_PATH" ]; then
+            log "Firmware downloaded successfully"
+            cp "$FW_PATH" "${PERSIST_DIR}/hailo8_fw.bin" 2>/dev/null || true
+        else
+            log "WARNING: Failed to download firmware from ${FW_URL}"
+            rm -f "$FW_PATH"
+        fi
+    else
+        log "WARNING: No firmware backup or version info available"
+    fi
+fi
+
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload
 depmod -a || log "WARNING: depmod failed"
@@ -308,7 +375,9 @@ echo ""
 echo "=== Persistence setup complete ==="
 echo ""
 echo "Persistent config: ${PERSIST_DIR}/"
-echo "  hailo.raw          — backup for post-update reinstall"
-echo "  hailo-postinit.sh  — runs on every boot (registered as POSTINIT)"
+echo "  hailo.raw                — sysext backup for post-update reinstall"
+echo "  hailo8_fw.bin            — firmware backup"
+echo "  .hailo-driver-version    — HailoRT version for firmware recovery"
+echo "  hailo-postinit.sh        — runs on every boot (registered as POSTINIT)"
 echo ""
 echo "The Hailo-8 driver will survive TrueNAS updates and reboots."

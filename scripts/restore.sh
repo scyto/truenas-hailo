@@ -48,6 +48,12 @@ echo "=== Restore complete ==="
 echo ""
 echo "=== Cleaning up persistence ==="
 
+# Remove firmware
+if [ -d /lib/firmware/hailo ]; then
+    echo "Removing firmware..."
+    rm -rf /lib/firmware/hailo
+fi
+
 # Disable hailo-load service
 systemctl disable hailo-load.service 2>/dev/null || true
 
