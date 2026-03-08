@@ -297,6 +297,7 @@ Checks `hailo-ai/hailort-drivers` GitHub tags for newer versions. Creates an iss
 - New driver versions should be tested before deployment
 - The kernel module interface is stable across minor versions
 - Users should opt-in to driver updates
+- the frigate image is usually pinned to a specific version so no point building versions frigate container doesn't support 
 
 ## Comparison with NVIDIA Sysext
 
