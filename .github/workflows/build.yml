@@ -82,7 +82,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /tmp/kernel-headers
-          key: kernel-headers-${{ inputs.truenas_version }}
+          key: kernel-headers-v2-${{ inputs.truenas_version }}
 
       - name: Extract kernel headers from TrueNAS ISO
         if: steps.headers-cache.outputs.cache-hit != 'true'
@@ -159,15 +159,19 @@ jobs:
           echo "=== /usr/src contents ==="
           ls -la /tmp/rootfs/usr/src/ 2>/dev/null || echo "(empty or missing)"
 
-          # Prefer production headers with a real version number (e.g. 6.6.x-production+truenas)
-          # Skip metapackage symlinks like "linux-headers-truenas-production-amd64"
-          KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -E '^[0-9]+\.' | grep -i 'production' | head -1)
+          # Select kernel headers: prefer production over debug
+          # TrueNAS provides headers like:
+          #   linux-headers-truenas-production-amd64  (non-versioned, preferred)
+          #   linux-headers-truenas-debug-amd64       (non-versioned, avoid)
+          #   linux-headers-6.6.x-production+truenas  (versioned, preferred)
+          #   linux-headers-6.6.x-debug+truenas       (versioned, avoid)
+          KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1)
           if [ -z "$KVER" ]; then
-            # Fall back to any versioned headers
-            KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -E '^[0-9]+\.' | head -1)
+            # Fall back to any non-debug headers
+            KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1)
           fi
           if [ -z "$KVER" ]; then
-            # Last resort: any headers at all
+            # Last resort: any headers at all (even debug)
             KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | head -1 | sed 's/linux-headers-//')
           fi
 
@@ -203,13 +207,13 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /tmp/kernel-headers
-          key: kernel-headers-${{ inputs.truenas_version }}
+          key: kernel-headers-v2-${{ inputs.truenas_version }}
 
       - name: Detect kernel version from cached headers
         run: |
-          KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -E '^[0-9]+\.' | grep -i 'production' | head -1)
+          KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1)
           if [ -z "$KVER" ]; then
-            KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -E '^[0-9]+\.' | head -1)
+            KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1)
           fi
           if [ -z "$KVER" ]; then
             KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | head -1 | sed 's/linux-headers-//')
