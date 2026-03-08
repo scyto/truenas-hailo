@@ -281,3 +281,7 @@ The Hailo-8 firmware downloaded during installation is proprietary and subject t
 Build approach inspired by [truenas-nvidia-blackwell](https://github.com/scyto/truenas-nvidia-blackwell).
 
 Hailo-8 driver source: [hailo-ai/hailort-drivers](https://github.com/hailo-ai/hailort-drivers) and [hailo-ai/hailort](https://github.com/hailo-ai/hailort).
+
+## About This Project
+
+This project was developed with the assistance of AI (Claude by Anthropic) via Claude Code. A human provided direction, reviewed outputs, and made decisions, but the implementation was AI-assisted.
