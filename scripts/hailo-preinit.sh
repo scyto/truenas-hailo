@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# TrueNAS POSTINIT script: reinstalls hailo.raw sysext after OS updates.
+# TrueNAS PREINIT script: activates hailo.raw sysext on every boot.
+# Runs before middleware starts, so the Hailo device is ready before
+# app containers (e.g., Frigate) launch.
+#
 # Stored on persistent pool; registered via midclt during install.
 # Idempotent — safe to run on every boot.
 #
@@ -12,7 +15,7 @@
 
 set -uo pipefail
 
-log() { echo "[hailo-postinit] $*"; }
+log() { echo "[hailo-preinit] $*"; }
 
 # --- Find persistent config via glob ---
 PERSIST_DIR=""
@@ -78,8 +81,7 @@ ln -sf "$SYSEXT_TARGET" /run/extensions/hailo.raw
 systemd-sysext refresh
 ldconfig
 
-log "Reloading systemd and loading Hailo module..."
-systemctl daemon-reload
+log "Loading Hailo module..."
 HAILO_KO="/usr/lib/modules/$(uname -r)/extra/hailo_pci.ko"
 if [ -f "$HAILO_KO" ]; then
     insmod "$HAILO_KO" || log "WARNING: insmod hailo_pci failed (device may not be present)"

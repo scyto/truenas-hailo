@@ -110,7 +110,7 @@ sudo hailortcli fw-control identify
 curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/restore.sh | sudo bash
 ```
 
-This removes the sysext, deregisters the POSTINIT script, and cleans up persistent storage.
+This removes the sysext, deregisters the init script, and cleans up persistent storage.
 
 ## Persistence
 
@@ -119,7 +119,7 @@ TrueNAS updates replace the rootfs, which wipes `/usr/` and any installed sysext
 ### Recovery Process
 
 1. **Backup**: The sysext (with firmware already injected) is copied to a persistent ZFS pool
-2. **POSTINIT script**: Registered with TrueNAS middleware, runs on every boot
+2. **PREINIT script**: Registered with TrueNAS middleware, runs on every boot before apps start
 3. On boot, the script compares checksums — if the installed sysext differs from the backup (indicating a TrueNAS update) or is missing, it reinstalls from the backup
 4. No network access is needed at boot — firmware is already inside the backed-up sysext
 
@@ -129,7 +129,7 @@ TrueNAS updates replace the rootfs, which wipes `/usr/` and any installed sysext
 /mnt/<pool>/.config/hailo/
 ├── hailo.raw                ← Sysext backup (includes firmware)
 ├── .hailo-driver-version    ← HailoRT version (informational)
-└── hailo-postinit.sh        ← Boot script (registered as POSTINIT)
+└── hailo-preinit.sh         ← Boot script (registered as PREINIT)
 ```
 
 ### Pool Selection
@@ -140,7 +140,7 @@ The install script selects a pool in this order:
 2. `--pool=NAME` — use `/mnt/<NAME>/.config/hailo`
 3. **Auto-detect** — first ZFS pool that isn't `boot-pool`
 
-The POSTINIT script finds the config at boot by scanning `/mnt/*/.config/hailo/`, so it works even if the pool name changes.
+The PREINIT script finds the config at boot by scanning `/mnt/*/.config/hailo/`, so it works even if the pool name changes.
 
 ## Using with Frigate
 
@@ -231,12 +231,12 @@ Two weekly GitHub Actions workflows monitor for updates:
 | Script | Purpose |
 | --- | --- |
 | `scripts/install.sh` | Downloads release, fetches firmware, injects into sysext, installs, sets up persistence |
-| `scripts/restore.sh` | Uninstalls sysext, deregisters POSTINIT, cleans up persistent storage |
-| `scripts/hailo-postinit.sh` | Boot-time recovery script (also embedded in install.sh as heredoc) |
+| `scripts/restore.sh` | Uninstalls sysext, deregisters init script, cleans up persistent storage |
+| `scripts/hailo-preinit.sh` | Boot-time script — activates sysext before apps start (also embedded in install.sh) |
 
 ## Important Notes
 
-- The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build. The POSTINIT script handles reinstallation automatically, but a new build is needed if the kernel changed.
+- The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build. The PREINIT script handles reinstallation automatically, but a new build is needed if the kernel changed.
 - The `hailort-drivers` repo uses the **`hailo8` branch** for Hailo-8 support. The `master` branch only supports Hailo-10/15.
 - Secure Boot: The unsigned kernel module may require disabling Secure Boot.
 - If firmware download fails during installation, the script aborts — the sysext will not be installed without firmware.

@@ -48,27 +48,27 @@ echo "=== Cleaning up persistence ==="
 # Disable hailo-load service
 systemctl disable hailo-load.service 2>/dev/null || true
 
-# Deregister POSTINIT script
-POSTINIT_ID=$(midclt call initshutdownscript.query 2>/dev/null \
+# Deregister init script (preinit or legacy postinit)
+INIT_ID=$(midclt call initshutdownscript.query 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
     scripts = json.load(sys.stdin)
     for s in scripts:
         cmd = s.get('command', '') or s.get('script', '')
-        if 'hailo-postinit' in cmd or '.config/hailo' in cmd:
+        if 'hailo-preinit' in cmd or 'hailo-postinit' in cmd or '.config/hailo' in cmd:
             print(s['id'], end='')
             break
 except Exception:
     pass
 " 2>/dev/null) || true
 
-if [ -n "$POSTINIT_ID" ]; then
-    midclt call initshutdownscript.delete "$POSTINIT_ID" 2>/dev/null \
-        && echo "POSTINIT script deregistered (id: ${POSTINIT_ID})" \
-        || echo "WARNING: Failed to deregister POSTINIT script"
+if [ -n "$INIT_ID" ]; then
+    midclt call initshutdownscript.delete "$INIT_ID" 2>/dev/null \
+        && echo "Init script deregistered (id: ${INIT_ID})" \
+        || echo "WARNING: Failed to deregister init script"
 else
-    echo "No POSTINIT script found to deregister"
+    echo "No init script found to deregister"
 fi
 
 # Remove persistent config

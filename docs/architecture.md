@@ -211,7 +211,7 @@ When the sysext is merged, firmware appears at `/usr/lib/firmware/hailo/hailo8_f
 
 ### Firmware at Boot Time
 
-The POSTINIT script does **not** download firmware from the network. The backed-up `hailo.raw` on the pool already contains firmware (it was injected at install time). Restoring the backup restores firmware too. This means:
+The PREINIT script does **not** download firmware from the network. The backed-up `hailo.raw` on the pool already contains firmware (it was injected at install time). Restoring the backup restores firmware too. This means:
 
 - No network dependency at boot
 - No risk of boot failure if Hailo's servers are down
@@ -229,20 +229,29 @@ Config stored on a ZFS data pool (survives OS updates):
 /mnt/<pool>/.config/hailo/
 ├── hailo.raw                ← Backup of the sysext (includes firmware)
 ├── .hailo-driver-version    ← HailoRT version (informational)
-└── hailo-postinit.sh        ← The POSTINIT script itself
+└── hailo-preinit.sh         ← The PREINIT script itself
 ```
 
-### Layer 2: POSTINIT Script
+### Layer 2: PREINIT Script
 
-A script registered with TrueNAS via `midclt call initshutdownscript.create`. Runs on every boot:
+A script registered with TrueNAS via `midclt call initshutdownscript.create` with `"when": "PREINIT"`. Runs on every boot **before the middleware starts**, which means the Hailo device is ready before app containers (e.g., Frigate) launch.
+
+Why PREINIT and not POSTINIT:
+
+- PREINIT runs after ZFS pools are mounted but before the middleware starts apps
+- POSTINIT runs after the middleware is up, by which time app containers may already be starting
+- The script only uses `zfs`, `cp`, `systemd-sysext`, and `insmod` — all available at PREINIT time
+- The timeout is set to 30 seconds (default is 10, which is too tight for the copy + sysext refresh)
+
+The script:
 
 1. Finds backup at `/mnt/<pool>/.config/hailo/hailo.raw` (scans `/mnt/*/.config/hailo/`)
 2. Compares SHA256 checksum with installed sysext
-3. If different (TrueNAS updated) or missing: reinstalls from backup
-4. Activates sysext via symlink + refresh pattern
+3. If different (TrueNAS updated) or missing: copies from backup to `/usr/` (temporarily unlocks ZFS readonly)
+4. **Always** activates sysext via symlink + refresh (the `/run/extensions/` symlink is on tmpfs and gone after every reboot)
 5. Loads kernel module via `insmod`
 
-The script is idempotent — if the installed sysext matches the backup, it exits immediately.
+The script is idempotent — on a normal reboot where checksums match, it skips the copy but still activates the sysext and loads the module.
 
 ### Pool Selection
 

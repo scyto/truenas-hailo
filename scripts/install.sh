@@ -266,13 +266,20 @@ cp /tmp/hailo.raw "${PERSIST_DIR}/hailo.raw"
 # Save HailoRT version for reference
 echo -n "$HAILO_VERSION" > "${PERSIST_DIR}/.hailo-driver-version"
 
-# --- Write POSTINIT script to persistent storage ---
-# NOTE: This is an inline copy of scripts/hailo-postinit.sh.
+# --- Write PREINIT script to persistent storage ---
+# NOTE: This is an inline copy of scripts/hailo-preinit.sh.
 # Keep both copies in sync when making changes.
-echo "Writing POSTINIT script..."
-cat > "${PERSIST_DIR}/hailo-postinit.sh" <<'POSTINIT_EOF'
+echo "Writing PREINIT script..."
+
+# Clean up old postinit script if present
+rm -f "${PERSIST_DIR}/hailo-postinit.sh"
+
+cat > "${PERSIST_DIR}/hailo-preinit.sh" <<'PREINIT_EOF'
 #!/usr/bin/env bash
-# TrueNAS POSTINIT script: reinstalls hailo.raw sysext after OS updates.
+# TrueNAS PREINIT script: activates hailo.raw sysext on every boot.
+# Runs before middleware starts, so the Hailo device is ready before
+# app containers (e.g., Frigate) launch.
+#
 # Stored on persistent pool; registered via midclt during install.
 # Idempotent — safe to run on every boot.
 #
@@ -282,7 +289,7 @@ cat > "${PERSIST_DIR}/hailo-postinit.sh" <<'POSTINIT_EOF'
 
 set -uo pipefail
 
-log() { echo "[hailo-postinit] $*"; }
+log() { echo "[hailo-preinit] $*"; }
 
 # --- Find persistent config via glob ---
 PERSIST_DIR=""
@@ -348,8 +355,7 @@ ln -sf "$SYSEXT_TARGET" /run/extensions/hailo.raw
 systemd-sysext refresh
 ldconfig
 
-log "Reloading systemd and loading Hailo module..."
-systemctl daemon-reload
+log "Loading Hailo module..."
 HAILO_KO="/usr/lib/modules/$(uname -r)/extra/hailo_pci.ko"
 if [ -f "$HAILO_KO" ]; then
     insmod "$HAILO_KO" || log "WARNING: insmod hailo_pci failed (device may not be present)"
@@ -359,13 +365,14 @@ fi
 
 log "Done"
 exit 0
-POSTINIT_EOF
-chmod +x "${PERSIST_DIR}/hailo-postinit.sh"
+PREINIT_EOF
+chmod +x "${PERSIST_DIR}/hailo-preinit.sh"
 
-# --- Register POSTINIT script via midclt ---
-POSTINIT_SCRIPT="${PERSIST_DIR}/hailo-postinit.sh"
-echo "Registering POSTINIT script..."
+# --- Register PREINIT script via midclt ---
+PREINIT_SCRIPT="${PERSIST_DIR}/hailo-preinit.sh"
+echo "Registering PREINIT script..."
 
+# Find any existing hailo init script (postinit or preinit)
 EXISTING_ID=$(midclt call initshutdownscript.query 2>/dev/null \
     | python3 -c "
 import sys, json
@@ -373,7 +380,7 @@ try:
     scripts = json.load(sys.stdin)
     for s in scripts:
         cmd = s.get('command', '') or s.get('script', '')
-        if 'hailo-postinit' in cmd or '.config/hailo' in cmd:
+        if 'hailo-preinit' in cmd or 'hailo-postinit' in cmd or '.config/hailo' in cmd:
             print(s['id'], end='')
             break
 except Exception:
@@ -381,13 +388,13 @@ except Exception:
 " 2>/dev/null)
 
 if [ -n "$EXISTING_ID" ]; then
-    echo "POSTINIT script already registered (id: ${EXISTING_ID}), updating..."
-    midclt call initshutdownscript.update "$EXISTING_ID" "{\"type\": \"COMMAND\", \"command\": \"${POSTINIT_SCRIPT}\", \"when\": \"POSTINIT\", \"enabled\": true, \"comment\": \"Reinstall Hailo-8 sysext after TrueNAS updates\"}" 2>/dev/null \
-        || echo "WARNING: Failed to update POSTINIT script"
+    echo "Hailo init script already registered (id: ${EXISTING_ID}), updating to PREINIT..."
+    midclt call initshutdownscript.update "$EXISTING_ID" "{\"type\": \"COMMAND\", \"command\": \"${PREINIT_SCRIPT}\", \"when\": \"PREINIT\", \"enabled\": true, \"timeout\": 30, \"comment\": \"Activate Hailo-8 sysext before apps start\"}" 2>/dev/null \
+        || echo "WARNING: Failed to update init script"
 else
-    midclt call initshutdownscript.create "{\"type\": \"COMMAND\", \"command\": \"${POSTINIT_SCRIPT}\", \"when\": \"POSTINIT\", \"enabled\": true, \"comment\": \"Reinstall Hailo-8 sysext after TrueNAS updates\"}" 2>/dev/null \
-        || echo "WARNING: Failed to register POSTINIT script"
-    echo "POSTINIT script registered"
+    midclt call initshutdownscript.create "{\"type\": \"COMMAND\", \"command\": \"${PREINIT_SCRIPT}\", \"when\": \"PREINIT\", \"enabled\": true, \"timeout\": 30, \"comment\": \"Activate Hailo-8 sysext before apps start\"}" 2>/dev/null \
+        || echo "WARNING: Failed to register PREINIT script"
+    echo "PREINIT script registered"
 fi
 
 echo ""
@@ -396,6 +403,6 @@ echo ""
 echo "Persistent config: ${PERSIST_DIR}/"
 echo "  hailo.raw                — sysext backup (includes firmware)"
 echo "  .hailo-driver-version    — HailoRT version (informational)"
-echo "  hailo-postinit.sh        — runs on every boot (registered as POSTINIT)"
+echo "  hailo-preinit.sh         — runs before apps start (registered as PREINIT)"
 echo ""
 echo "The Hailo-8 driver will survive TrueNAS updates and reboots."
