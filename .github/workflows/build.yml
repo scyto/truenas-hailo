@@ -53,25 +53,29 @@ jobs:
             curl
 
       # ── Obtain TrueNAS kernel headers from the release ISO ──
-      - name: Cache TrueNAS ISO
-        uses: actions/cache@v4
+      - name: Restore cached TrueNAS ISO
+        id: iso-cache
+        uses: actions/cache/restore@v4
         with:
           path: /tmp/truenas.iso
           key: truenas-iso-${{ inputs.truenas_version }}
-          save-always: true
 
       - name: Download TrueNAS ISO
+        if: steps.iso-cache.outputs.cache-hit != 'true'
         run: |
-          if [ -f /tmp/truenas.iso ]; then
-            echo "Using cached ISO"
-          else
-            TRAIN="TrueNAS-SCALE-${{ inputs.train_name }}"
-            VERSION="${{ inputs.truenas_version }}"
-            ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
-            echo "Downloading: ${ISO_URL}"
-            curl -fSL "$ISO_URL" -o /tmp/truenas.iso
-          fi
+          TRAIN="TrueNAS-SCALE-${{ inputs.train_name }}"
+          VERSION="${{ inputs.truenas_version }}"
+          ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
+          echo "Downloading: ${ISO_URL}"
+          curl -fSL "$ISO_URL" -o /tmp/truenas.iso
           ls -lh /tmp/truenas.iso
+
+      - name: Save TrueNAS ISO to cache
+        if: steps.iso-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/truenas.iso
+          key: truenas-iso-${{ inputs.truenas_version }}
 
       - name: Extract kernel headers from TrueNAS ISO
         run: |
