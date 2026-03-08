@@ -13,7 +13,7 @@ echo "=== Removing Hailo-8 sysext ==="
 # Unload module if present
 if lsmod | grep -q hailo_pci; then
     echo "Unloading hailo_pci module..."
-    rmmod hailo_pci 2>/dev/null || echo "WARNING: Failed to unload hailo_pci"
+    rmmod hailo_pci || echo "WARNING: Failed to unload hailo_pci"
 fi
 
 # Unmerge sysext
@@ -21,8 +21,9 @@ echo "Unmerging sysext..."
 systemd-sysext unmerge
 
 # Make /usr writable
-USR_DATASET=$(zfs list -H -o name /usr)
-zfs set readonly=off "${USR_DATASET}"
+USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr (are you running as root?)"; exit 1; }
+[ -z "$USR_DATASET" ] && { echo "ERROR: ZFS dataset for /usr is empty"; exit 1; }
+zfs set readonly=off "${USR_DATASET}" || { echo "ERROR: Failed to make ${USR_DATASET} writable"; exit 1; }
 
 # Remove hailo.raw (restore backup if it exists)
 if [ -f "${HAILO_BAK}" ]; then
@@ -34,7 +35,7 @@ elif [ -f "${HAILO_RAW}" ]; then
 fi
 
 # Restore read-only
-zfs set readonly=on "${USR_DATASET}"
+zfs set readonly=on "${USR_DATASET}" || echo "WARNING: Failed to restore ${USR_DATASET} to read-only"
 
 # Re-merge sysext
 echo "Merging sysext..."
@@ -63,7 +64,7 @@ try:
             break
 except Exception:
     pass
-" 2>/dev/null)
+" 2>/dev/null) || true
 
 if [ -n "$POSTINIT_ID" ]; then
     midclt call initshutdownscript.delete "$POSTINIT_ID" 2>/dev/null \

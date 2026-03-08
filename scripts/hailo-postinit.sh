@@ -56,7 +56,7 @@ log "Copying hailo.raw from backup..."
 if ! cp "$HAILO_RAW_BACKUP" "$SYSEXT_TARGET"; then
     log "ERROR: Failed to copy hailo.raw from backup"
     [ -n "$USR_DATASET" ] && zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
-    exit 0
+    exit 1
 fi
 
 if [ -n "$USR_DATASET" ]; then
@@ -68,8 +68,8 @@ systemd-sysext merge
 
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload
-depmod -a 2>/dev/null || true
-modprobe hailo_pci 2>/dev/null || log "WARNING: modprobe hailo_pci failed"
+depmod -a || log "WARNING: depmod failed"
+modprobe hailo_pci || log "WARNING: modprobe hailo_pci failed (device may not be present)"
 
 log "hailo.raw reinstalled successfully"
 exit 0

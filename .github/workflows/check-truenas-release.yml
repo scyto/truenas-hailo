@@ -23,19 +23,23 @@ jobs:
           # Find the latest stable 25.10.x tag (exclude BETA/RC)
           LATEST_TAG=$(echo "$TAGS_JSON" | python3 -c "
           import sys, json
-          tags = json.load(sys.stdin)
-          goldeye = [
-              t['name'] for t in tags
-              if t['name'].startswith('TS-25.10.')
-              and 'BETA' not in t['name'].upper()
-              and 'RC' not in t['name'].upper()
-          ]
-          if not goldeye:
-              print('')
-              sys.exit()
-          # Sort by version components
-          goldeye.sort(key=lambda x: [int(p) for p in x.replace('TS-','').split('.')])
-          print(goldeye[-1])
+          try:
+              tags = json.load(sys.stdin)
+              goldeye = [
+                  t['name'] for t in tags
+                  if t['name'].startswith('TS-25.10.')
+                  and 'BETA' not in t['name'].upper()
+                  and 'RC' not in t['name'].upper()
+              ]
+              if not goldeye:
+                  print('')
+                  sys.exit()
+              # Sort by version components
+              goldeye.sort(key=lambda x: [int(p) for p in x.replace('TS-','').split('.')])
+              print(goldeye[-1])
+          except Exception as e:
+              print(f'ERROR: {e}', file=sys.stderr)
+              sys.exit(1)
           ")
 
           LATEST_VERSION="${LATEST_TAG#TS-}"
@@ -72,8 +76,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add version
-          git commit -m "Update tracked TrueNAS version to ${{ steps.check_release.outputs.new_version }}"
-          git push
+          git commit -m "Update tracked TrueNAS version to ${{ steps.check_release.outputs.new_version }}" || {
+            echo "ERROR: Failed to commit version update"
+            exit 1
+          }
+          git push || {
+            echo "ERROR: Failed to push version update"
+            exit 1
+          }
 
       - name: Trigger build for new TrueNAS release
         if: steps.check_release.outputs.new_release == 'true'

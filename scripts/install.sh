@@ -47,7 +47,7 @@ done
 cleanup() {
     rm -f /tmp/hailo.raw /tmp/hailo.raw.sha256
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # If a local path is provided, use it; otherwise download from GitHub releases
 if [ -n "$LOCAL_RAW" ]; then
@@ -55,7 +55,15 @@ if [ -n "$LOCAL_RAW" ]; then
     cp "$LOCAL_RAW" /tmp/hailo.raw
 else
     # Detect TrueNAS version
-    VERSION=$(midclt call system.info | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+    VERSION=$(midclt call system.info | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['version'])
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+") || { echo "ERROR: Failed to detect TrueNAS version"; exit 1; }
+    [ -z "$VERSION" ] && { echo "ERROR: TrueNAS version is empty"; exit 1; }
     echo "Detected TrueNAS version: ${VERSION}"
 
     # Find matching release
@@ -63,14 +71,18 @@ else
     RELEASE_TAG=$(curl -sf "https://api.github.com/repos/${REPO}/releases" \
         | python3 -c "
 import sys, json
-releases = json.load(sys.stdin)
-version = '${VERSION}'
-matches = [r for r in releases if version in r['tag_name']]
-if not matches:
-    print('', end='')
-else:
-    print(matches[0]['tag_name'], end='')
-")
+try:
+    releases = json.load(sys.stdin)
+    version = '${VERSION}'
+    matches = [r for r in releases if version in r['tag_name']]
+    if not matches:
+        print('', end='')
+    else:
+        print(matches[0]['tag_name'], end='')
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+") || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
 
     if [ -z "$RELEASE_TAG" ]; then
         echo "ERROR: No release found for TrueNAS version ${VERSION}"
@@ -85,8 +97,12 @@ else:
     # Download hailo.raw and checksum
     BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
     echo "Downloading hailo.raw..."
-    curl -fSL "${BASE_URL}/hailo.raw" -o /tmp/hailo.raw
-    curl -fSL "${BASE_URL}/hailo.raw.sha256" -o /tmp/hailo.raw.sha256
+    curl -fSL "${BASE_URL}/hailo.raw" -o /tmp/hailo.raw || { echo "ERROR: Failed to download hailo.raw"; exit 1; }
+    curl -fSL "${BASE_URL}/hailo.raw.sha256" -o /tmp/hailo.raw.sha256 || { echo "ERROR: Failed to download checksum"; exit 1; }
+
+    # Validate downloads are non-empty
+    [ -s /tmp/hailo.raw ] || { echo "ERROR: hailo.raw is empty"; exit 1; }
+    [ -s /tmp/hailo.raw.sha256 ] || { echo "ERROR: checksum file is empty"; exit 1; }
 
     # Verify checksum
     echo "Verifying checksum..."
@@ -104,9 +120,10 @@ echo "=== Installing hailo.raw ==="
 systemd-sysext unmerge
 
 # Make /usr writable
-USR_DATASET=$(zfs list -H -o name /usr)
+USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr"; exit 1; }
+[ -z "$USR_DATASET" ] && { echo "ERROR: ZFS dataset for /usr is empty"; exit 1; }
 echo "Setting ${USR_DATASET} to writable..."
-zfs set readonly=off "${USR_DATASET}"
+zfs set readonly=off "${USR_DATASET}" || { echo "ERROR: Failed to make ${USR_DATASET} writable"; exit 1; }
 
 # Backup existing hailo.raw
 if [ -f "${HAILO_RAW}" ]; then
@@ -127,8 +144,8 @@ systemd-sysext merge
 
 # Load the kernel module
 echo "Loading Hailo kernel module..."
-depmod -a 2>/dev/null || true
-modprobe hailo_pci 2>/dev/null || echo "WARNING: modprobe hailo_pci failed (device may not be present)"
+depmod -a || echo "WARNING: depmod failed"
+modprobe hailo_pci || echo "WARNING: modprobe hailo_pci failed (device may not be present)"
 
 echo ""
 echo "=== Installation complete ==="
@@ -239,7 +256,7 @@ log "Copying hailo.raw from backup..."
 if ! cp "$HAILO_RAW_BACKUP" "$SYSEXT_TARGET"; then
     log "ERROR: Failed to copy hailo.raw from backup"
     [ -n "$USR_DATASET" ] && zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
-    exit 0
+    exit 1
 fi
 
 if [ -n "$USR_DATASET" ]; then
@@ -251,8 +268,8 @@ systemd-sysext merge
 
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload
-depmod -a 2>/dev/null || true
-modprobe hailo_pci 2>/dev/null || log "WARNING: modprobe hailo_pci failed"
+depmod -a || log "WARNING: depmod failed"
+modprobe hailo_pci || log "WARNING: modprobe hailo_pci failed (device may not be present)"
 
 log "hailo.raw reinstalled successfully"
 exit 0

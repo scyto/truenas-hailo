@@ -7,7 +7,9 @@ Before=docker.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/modprobe hailo_pci
-ExecStart=/usr/bin/udevadm trigger --subsystem-match=hailo_chardev
+ExecStart=-/usr/bin/udevadm trigger --subsystem-match=hailo_chardev
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target

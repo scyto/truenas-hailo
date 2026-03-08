@@ -74,51 +74,87 @@ jobs:
 
       - name: Extract kernel headers from TrueNAS ISO
         run: |
-          # Mount the ISO
+          # TrueNAS ISO structure:
+          #   /live/filesystem.squashfs  — installer-only environment (NO kernel headers)
+          #   /TrueNAS-SCALE.update      — outer squashfs containing:
+          #     /rootfs.squashfs           — full rootfs with headers at /usr/src/linux-headers-*
+          #
+          # We must extract the nested rootfs.squashfs from inside the .update file.
+
           sudo mkdir -p /tmp/iso
           sudo mount -o loop /tmp/truenas.iso /tmp/iso
 
-          # Find the squashfs — TrueNAS ISOs contain a live filesystem
           echo "=== ISO contents ==="
           ls -la /tmp/iso/
 
-          # The rootfs squashfs may be at different paths depending on TrueNAS version
-          SQUASHFS=""
-          for candidate in \
-            /tmp/iso/live/filesystem.squashfs \
-            /tmp/iso/rootfs.squashfs \
-            /tmp/iso/truenas.squashfs; do
-            if [ -f "$candidate" ]; then
-              SQUASHFS="$candidate"
-              break
-            fi
-          done
+          # --- Extract the real rootfs from TrueNAS-SCALE.update (nested squashfs) ---
+          UPDATE_FILE="/tmp/iso/TrueNAS-SCALE.update"
+          if [ -f "$UPDATE_FILE" ]; then
+            echo "Found TrueNAS-SCALE.update ($(du -h "$UPDATE_FILE" | cut -f1)), extracting rootfs.squashfs..."
+            sudo mkdir -p /tmp/update-contents
+            sudo unsquashfs -d /tmp/update-contents "$UPDATE_FILE" rootfs.squashfs || {
+              echo "ERROR: Failed to extract rootfs.squashfs from .update file"
+              sudo umount /tmp/iso
+              exit 1
+            }
 
-          if [ -z "$SQUASHFS" ]; then
-            echo "ERROR: Could not find squashfs in ISO"
-            find /tmp/iso -name "*.squashfs" -o -name "*.img" 2>/dev/null || true
-            sudo umount /tmp/iso
-            exit 1
+            ROOTFS_SQUASHFS="/tmp/update-contents/rootfs.squashfs"
+            if [ ! -f "$ROOTFS_SQUASHFS" ]; then
+              echo "ERROR: rootfs.squashfs not found inside .update file"
+              echo "=== .update contents ==="
+              ls -la /tmp/update-contents/
+              sudo umount /tmp/iso
+              exit 1
+            fi
+
+            echo "Extracting kernel headers from rootfs.squashfs..."
+            sudo mkdir -p /tmp/rootfs
+            # Extract only /usr/src and /lib/modules to save time and disk
+            sudo unsquashfs -d /tmp/rootfs "$ROOTFS_SQUASHFS" 'usr/src/linux-headers-*' 'lib/modules/*' || {
+              echo "WARNING: Selective extract failed, trying full extract..."
+              sudo unsquashfs -f -d /tmp/rootfs "$ROOTFS_SQUASHFS"
+            }
+          else
+            echo "No TrueNAS-SCALE.update found, falling back to live/filesystem.squashfs..."
+
+            # Fallback for older ISO layouts
+            SQUASHFS=""
+            for candidate in \
+              /tmp/iso/live/filesystem.squashfs \
+              /tmp/iso/rootfs.squashfs \
+              /tmp/iso/truenas.squashfs; do
+              if [ -f "$candidate" ]; then
+                SQUASHFS="$candidate"
+                break
+              fi
+            done
+
+            if [ -z "$SQUASHFS" ]; then
+              echo "ERROR: Could not find any squashfs in ISO"
+              find /tmp/iso -name "*.squashfs" -o -name "*.update" 2>/dev/null || true
+              sudo umount /tmp/iso
+              exit 1
+            fi
+
+            echo "Found squashfs: $SQUASHFS"
+            sudo mkdir -p /tmp/rootfs
+            sudo mount -o loop "$SQUASHFS" /tmp/rootfs
           fi
 
-          echo "Found squashfs: $SQUASHFS"
+          # --- Find kernel headers ---
+          echo "=== /usr/src contents ==="
+          ls -la /tmp/rootfs/usr/src/ 2>/dev/null || echo "(empty or missing)"
 
-          # Mount the rootfs
-          sudo mkdir -p /tmp/rootfs
-          sudo mount -o loop "$SQUASHFS" /tmp/rootfs
-
-          # Find kernel version
-          KVER=$(ls /tmp/rootfs/usr/src/ | grep 'linux-headers-' | grep -i 'production\|truenas' | head -1 | sed 's/linux-headers-//')
+          KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | grep -i 'production\|truenas' | head -1 | sed 's/linux-headers-//')
           if [ -z "$KVER" ]; then
-            echo "WARNING: No production kernel headers found, trying any kernel headers..."
-            KVER=$(ls /tmp/rootfs/usr/src/ | grep 'linux-headers-' | head -1 | sed 's/linux-headers-//')
+            KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | head -1 | sed 's/linux-headers-//')
           fi
 
           if [ -z "$KVER" ]; then
             echo "ERROR: No kernel headers found in rootfs"
-            ls -la /tmp/rootfs/usr/src/ || true
-            sudo umount /tmp/rootfs
-            sudo umount /tmp/iso
+            echo "=== Debug: /lib/modules contents ==="
+            ls -la /tmp/rootfs/lib/modules/ 2>/dev/null || true
+            sudo umount /tmp/iso 2>/dev/null || true
             exit 1
           fi
 
@@ -129,15 +165,15 @@ jobs:
           sudo mkdir -p /tmp/kernel-headers
           sudo cp -a "/tmp/rootfs/usr/src/linux-headers-${KVER}" /tmp/kernel-headers/
 
-          # Also copy module build infrastructure if separate
+          # Also copy module build infrastructure if available
           if [ -d "/tmp/rootfs/lib/modules/${KVER}" ]; then
             sudo mkdir -p /tmp/kernel-modules
             sudo cp -a "/tmp/rootfs/lib/modules/${KVER}" /tmp/kernel-modules/
           fi
 
-          # Cleanup mounts
-          sudo umount /tmp/rootfs
-          sudo umount /tmp/iso
+          # Cleanup
+          sudo umount /tmp/rootfs 2>/dev/null || true
+          sudo umount /tmp/iso 2>/dev/null || true
 
           echo "Kernel headers extracted successfully"
           ls -la "/tmp/kernel-headers/linux-headers-${KVER}/"
@@ -146,9 +182,14 @@ jobs:
       - name: Clone hailort-drivers
         run: |
           git clone --depth 1 --branch v${{ inputs.hailo_driver_version }} \
-            https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers \
-            || git clone --depth 1 --branch hailo8 \
-              https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers
+            https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers || {
+            echo "WARNING: Failed to clone tag v${{ inputs.hailo_driver_version }}, trying hailo8 branch"
+            git clone --depth 1 --branch hailo8 \
+              https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers || {
+              echo "ERROR: Failed to clone hailort-drivers from any branch"
+              exit 1
+            }
+          }
           echo "Checked out hailort-drivers:"
           cd /tmp/hailort-drivers && git log --oneline -1
 
@@ -168,9 +209,14 @@ jobs:
       - name: Clone hailort
         run: |
           git clone --depth 1 --branch v${{ inputs.hailo_driver_version }} \
-            https://github.com/hailo-ai/hailort.git /tmp/hailort \
-            || git clone --depth 1 --branch hailo8 \
-              https://github.com/hailo-ai/hailort.git /tmp/hailort
+            https://github.com/hailo-ai/hailort.git /tmp/hailort || {
+            echo "WARNING: Failed to clone tag v${{ inputs.hailo_driver_version }}, trying hailo8 branch"
+            git clone --depth 1 --branch hailo8 \
+              https://github.com/hailo-ai/hailort.git /tmp/hailort || {
+              echo "ERROR: Failed to clone hailort from any branch"
+              exit 1
+            }
+          }
           echo "Checked out hailort:"
           cd /tmp/hailort && git log --oneline -1
 
@@ -197,8 +243,9 @@ jobs:
               cp "$FW_FILE" /tmp/hailo8_fw.bin
               echo "Firmware downloaded: $(ls -lh /tmp/hailo8_fw.bin)"
             else
-              echo "WARNING: Firmware download script ran but no .bin found"
+              echo "ERROR: Firmware download script ran but no .bin found"
               find . -name "*.bin" -type f || true
+              exit 1
             fi
           else
             echo "WARNING: download_firmware.sh not found, checking for bundled firmware..."
@@ -207,8 +254,8 @@ jobs:
               cp "$FW_FILE" /tmp/hailo8_fw.bin
               echo "Found bundled firmware: $(ls -lh /tmp/hailo8_fw.bin)"
             else
-              echo "ERROR: No firmware found. The sysext will be built without firmware."
-              echo "Users will need to manually place hailo8_fw.bin in /lib/firmware/hailo/"
+              echo "ERROR: No firmware found. Cannot build functional sysext."
+              exit 1
             fi
           fi
 
