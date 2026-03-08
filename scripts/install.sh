@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# Installs the pre-built hailo.raw sysext on a running TrueNAS system.
+# All driver compilation happens on GitHub Actions — this script only
+# downloads and places the pre-built hailo.raw file.
+#
+# Usage: curl -fsSL <release-url>/install.sh | sudo bash
+#    or: sudo ./install.sh [path-to-hailo.raw]
+#    or: sudo ./install.sh --pool=fast
+
+set -euo pipefail
+
+REPO="scyto/truenas-hailo"
+SYSEXT_DIR="/usr/share/truenas/sysext-extensions"
+HAILO_RAW="${SYSEXT_DIR}/hailo.raw"
+
+# --- Parse CLI arguments ---
+LOCAL_RAW=""
+POOL_NAME=""
+PERSIST_PATH=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --pool=*) POOL_NAME="${arg#*=}" ;;
+        --persist-path=*) PERSIST_PATH="${arg#*=}" ;;
+        --help)
+            echo "Usage: sudo ./install.sh [OPTIONS] [path-to-hailo.raw]"
+            echo ""
+            echo "Options:"
+            echo "  --pool=NAME              ZFS pool for persistent config (e.g., fast)"
+            echo "  --persist-path=PATH      Exact path for persistent config"
+            echo "  --help                   Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  sudo ./install.sh --pool=fast"
+            echo "  sudo ./install.sh /tmp/hailo.raw"
+            echo "  curl -fsSL <url>/install.sh | sudo bash"
+            exit 0
+            ;;
+        *)
+            if [ -f "$arg" ]; then
+                LOCAL_RAW="$arg"
+            fi
+            ;;
+    esac
+done
+
+cleanup() {
+    rm -f /tmp/hailo.raw /tmp/hailo.raw.sha256
+}
+trap cleanup EXIT
+
+# If a local path is provided, use it; otherwise download from GitHub releases
+if [ -n "$LOCAL_RAW" ]; then
+    echo "Using local hailo.raw: $LOCAL_RAW"
+    cp "$LOCAL_RAW" /tmp/hailo.raw
+else
+    # Detect TrueNAS version
+    VERSION=$(midclt call system.info | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+    echo "Detected TrueNAS version: ${VERSION}"
+
+    # Find matching release
+    echo "Searching for matching release..."
+    RELEASE_TAG=$(curl -sf "https://api.github.com/repos/${REPO}/releases" \
+        | python3 -c "
+import sys, json
+releases = json.load(sys.stdin)
+version = '${VERSION}'
+matches = [r for r in releases if version in r['tag_name']]
+if not matches:
+    print('', end='')
+else:
+    print(matches[0]['tag_name'], end='')
+")
+
+    if [ -z "$RELEASE_TAG" ]; then
+        echo "ERROR: No release found for TrueNAS version ${VERSION}"
+        echo "Available releases:"
+        curl -sf "https://api.github.com/repos/${REPO}/releases" \
+            | python3 -c "import sys,json; [print(f'  {r[\"tag_name\"]}') for r in json.load(sys.stdin)]"
+        exit 1
+    fi
+
+    echo "Found release: ${RELEASE_TAG}"
+
+    # Download hailo.raw and checksum
+    BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
+    echo "Downloading hailo.raw..."
+    curl -fSL "${BASE_URL}/hailo.raw" -o /tmp/hailo.raw
+    curl -fSL "${BASE_URL}/hailo.raw.sha256" -o /tmp/hailo.raw.sha256
+
+    # Verify checksum
+    echo "Verifying checksum..."
+    if ! (cd /tmp && sha256sum -c hailo.raw.sha256); then
+        echo "ERROR: Checksum verification failed!"
+        exit 1
+    fi
+    echo "Checksum OK"
+fi
+
+echo ""
+echo "=== Installing hailo.raw ==="
+
+# Unmerge sysext for modification
+systemd-sysext unmerge
+
+# Make /usr writable
+USR_DATASET=$(zfs list -H -o name /usr)
+echo "Setting ${USR_DATASET} to writable..."
+zfs set readonly=off "${USR_DATASET}"
+
+# Backup existing hailo.raw
+if [ -f "${HAILO_RAW}" ]; then
+    echo "Backing up existing hailo.raw..."
+    cp "${HAILO_RAW}" "${HAILO_RAW}.bak"
+fi
+
+# Install new hailo.raw
+echo "Installing new hailo.raw..."
+cp /tmp/hailo.raw "${HAILO_RAW}"
+
+# Restore read-only
+zfs set readonly=on "${USR_DATASET}"
+
+# Re-merge sysext
+echo "Merging sysext..."
+systemd-sysext merge
+
+# Load the kernel module
+echo "Loading Hailo kernel module..."
+depmod -a 2>/dev/null || true
+modprobe hailo_pci 2>/dev/null || echo "WARNING: modprobe hailo_pci failed (device may not be present)"
+
+echo ""
+echo "=== Installation complete ==="
+echo ""
+
+# Verify
+if [ -e /dev/hailo0 ]; then
+    echo "Device /dev/hailo0 detected!"
+    if command -v hailortcli &>/dev/null; then
+        echo "Firmware identification:"
+        hailortcli fw-control --identify 2>/dev/null || echo "(device query failed — may need reboot)"
+    fi
+else
+    echo "Device /dev/hailo0 not found."
+    echo "  - Ensure a Hailo-8 PCIe card is installed"
+    echo "  - Try rebooting the system"
+fi
+
+# ==========================================================================
+# Persistence setup — survives reboots and TrueNAS updates
+# ==========================================================================
+
+echo ""
+echo "=== Setting up persistence ==="
+
+# --- Detect persistent storage pool ---
+if [ -n "$PERSIST_PATH" ]; then
+    PERSIST_DIR="$PERSIST_PATH"
+elif [ -n "$POOL_NAME" ]; then
+    PERSIST_DIR="/mnt/${POOL_NAME}/.config/hailo"
+else
+    # Auto-detect: first pool that isn't boot-pool
+    POOL_NAME=$(zpool list -H -o name 2>/dev/null | grep -v '^boot-pool$' | head -1)
+    if [ -n "$POOL_NAME" ]; then
+        PERSIST_DIR="/mnt/${POOL_NAME}/.config/hailo"
+        echo "Auto-detected pool: ${POOL_NAME}"
+    else
+        echo "WARNING: No ZFS pool found (excluding boot-pool). Skipping persistence setup."
+        echo "  Re-run with --pool=<name> or --persist-path=<path> to enable persistence."
+        exit 0
+    fi
+fi
+
+echo "Persistent config directory: ${PERSIST_DIR}"
+mkdir -p "$PERSIST_DIR"
+
+# --- Backup hailo.raw to persistent storage ---
+echo "Backing up hailo.raw to persistent storage..."
+cp /tmp/hailo.raw "${PERSIST_DIR}/hailo.raw"
+
+# --- Write POSTINIT script to persistent storage ---
+# NOTE: This is an inline copy of scripts/hailo-postinit.sh.
+# Keep both copies in sync when making changes.
+echo "Writing POSTINIT script..."
+cat > "${PERSIST_DIR}/hailo-postinit.sh" <<'POSTINIT_EOF'
+#!/usr/bin/env bash
+# TrueNAS POSTINIT script: reinstalls hailo.raw sysext after OS updates.
+# Stored on persistent pool; registered via midclt during install.
+# Idempotent — safe to run on every boot.
+
+set -uo pipefail
+
+log() { echo "[hailo-postinit] $*"; }
+
+# --- Find persistent config via glob ---
+PERSIST_DIR=""
+for d in /mnt/*/.config/hailo; do
+    [ -d "$d" ] && PERSIST_DIR="$d" && break
+done
+
+if [ -z "$PERSIST_DIR" ]; then
+    log "No persistent config found at /mnt/*/.config/hailo/, nothing to do"
+    exit 0
+fi
+
+HAILO_RAW_BACKUP="${PERSIST_DIR}/hailo.raw"
+SYSEXT_TARGET="/usr/share/truenas/sysext-extensions/hailo.raw"
+
+if [ ! -f "$HAILO_RAW_BACKUP" ]; then
+    log "No hailo.raw backup at ${HAILO_RAW_BACKUP}, nothing to do"
+    exit 0
+fi
+
+# --- Compare checksums ---
+if [ -f "$SYSEXT_TARGET" ]; then
+    INSTALLED_SUM=$(sha256sum "$SYSEXT_TARGET" | awk '{print $1}')
+    BACKUP_SUM=$(sha256sum "$HAILO_RAW_BACKUP" | awk '{print $1}')
+    if [ "$INSTALLED_SUM" = "$BACKUP_SUM" ]; then
+        log "hailo.raw already matches backup, skipping"
+        exit 0
+    fi
+    log "hailo.raw differs from backup (update detected), reinstalling..."
+else
+    log "hailo.raw missing, installing from backup..."
+fi
+
+# --- Reinstall hailo.raw ---
+log "Unmerging sysext..."
+systemd-sysext unmerge 2>/dev/null || true
+
+log "Making /usr writable..."
+USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
+if [ -n "$USR_DATASET" ]; then
+    zfs set readonly=off "$USR_DATASET"
+fi
+
+log "Copying hailo.raw from backup..."
+if ! cp "$HAILO_RAW_BACKUP" "$SYSEXT_TARGET"; then
+    log "ERROR: Failed to copy hailo.raw from backup"
+    [ -n "$USR_DATASET" ] && zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
+    exit 0
+fi
+
+if [ -n "$USR_DATASET" ]; then
+    zfs set readonly=on "$USR_DATASET"
+fi
+
+log "Merging sysext..."
+systemd-sysext merge
+
+log "Reloading systemd and loading Hailo module..."
+systemctl daemon-reload
+depmod -a 2>/dev/null || true
+modprobe hailo_pci 2>/dev/null || log "WARNING: modprobe hailo_pci failed"
+
+log "hailo.raw reinstalled successfully"
+exit 0
+POSTINIT_EOF
+chmod +x "${PERSIST_DIR}/hailo-postinit.sh"
+
+# --- Register POSTINIT script via midclt ---
+POSTINIT_SCRIPT="${PERSIST_DIR}/hailo-postinit.sh"
+echo "Registering POSTINIT script..."
+
+EXISTING_ID=$(midclt call initshutdownscript.query 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    scripts = json.load(sys.stdin)
+    for s in scripts:
+        cmd = s.get('command', '') or s.get('script', '')
+        if 'hailo-postinit' in cmd or '.config/hailo' in cmd:
+            print(s['id'], end='')
+            break
+except Exception:
+    pass
+" 2>/dev/null)
+
+if [ -n "$EXISTING_ID" ]; then
+    echo "POSTINIT script already registered (id: ${EXISTING_ID}), updating..."
+    midclt call initshutdownscript.update "$EXISTING_ID" "{\"type\": \"COMMAND\", \"command\": \"${POSTINIT_SCRIPT}\", \"when\": \"POSTINIT\", \"enabled\": true, \"comment\": \"Reinstall Hailo-8 sysext after TrueNAS updates\"}" 2>/dev/null \
+        || echo "WARNING: Failed to update POSTINIT script"
+else
+    midclt call initshutdownscript.create "{\"type\": \"COMMAND\", \"command\": \"${POSTINIT_SCRIPT}\", \"when\": \"POSTINIT\", \"enabled\": true, \"comment\": \"Reinstall Hailo-8 sysext after TrueNAS updates\"}" 2>/dev/null \
+        || echo "WARNING: Failed to register POSTINIT script"
+    echo "POSTINIT script registered"
+fi
+
+echo ""
+echo "=== Persistence setup complete ==="
+echo ""
+echo "Persistent config: ${PERSIST_DIR}/"
+echo "  hailo.raw          — backup for post-update reinstall"
+echo "  hailo-postinit.sh  — runs on every boot (registered as POSTINIT)"
+echo ""
+echo "The Hailo-8 driver will survive TrueNAS updates and reboots."

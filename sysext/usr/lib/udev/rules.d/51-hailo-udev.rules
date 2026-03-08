@@ -1,0 +1,2 @@
+# Hailo-8 AI Accelerator — allow non-root access to /dev/hailo*
+SUBSYSTEM=="hailo_chardev", MODE="0666"

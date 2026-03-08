@@ -1,0 +1,13 @@
+[Unit]
+Description=Hailo-8 PCIe Accelerator Setup
+After=local-fs.target systemd-modules-load.service
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/modprobe hailo_pci
+ExecStart=/usr/bin/udevadm trigger --subsystem-match=hailo_chardev
+
+[Install]
+WantedBy=multi-user.target

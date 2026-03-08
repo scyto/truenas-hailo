@@ -1,0 +1,337 @@
+name: Build Hailo Sysext
+
+on:
+  workflow_dispatch:
+    inputs:
+      truenas_version:
+        description: 'TrueNAS version (e.g., 25.10.2.1)'
+        required: true
+        default: '25.10.2.1'
+      hailo_driver_version:
+        description: 'HailoRT driver version (e.g., 4.20.0)'
+        required: true
+        default: '4.20.0'
+      train_name:
+        description: 'Train name (e.g., Goldeye)'
+        required: true
+        default: 'Goldeye'
+
+  workflow_call:
+    inputs:
+      truenas_version:
+        type: string
+        required: true
+      hailo_driver_version:
+        type: string
+        required: true
+      train_name:
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libelf-dev \
+            squashfs-tools \
+            zstd \
+            kmod \
+            curl
+
+      # ── Obtain TrueNAS kernel headers from the release ISO ──
+      - name: Cache TrueNAS ISO
+        uses: actions/cache@v4
+        with:
+          path: /tmp/truenas.iso
+          key: truenas-iso-${{ inputs.truenas_version }}
+
+      - name: Download TrueNAS ISO
+        run: |
+          if [ -f /tmp/truenas.iso ]; then
+            echo "Using cached ISO"
+          else
+            TRAIN="TrueNAS-SCALE-${{ inputs.train_name }}"
+            VERSION="${{ inputs.truenas_version }}"
+            ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
+            echo "Downloading: ${ISO_URL}"
+            curl -fSL "$ISO_URL" -o /tmp/truenas.iso
+          fi
+          ls -lh /tmp/truenas.iso
+
+      - name: Extract kernel headers from TrueNAS ISO
+        run: |
+          # Mount the ISO
+          sudo mkdir -p /tmp/iso
+          sudo mount -o loop /tmp/truenas.iso /tmp/iso
+
+          # Find the squashfs — TrueNAS ISOs contain a live filesystem
+          echo "=== ISO contents ==="
+          ls -la /tmp/iso/
+
+          # The rootfs squashfs may be at different paths depending on TrueNAS version
+          SQUASHFS=""
+          for candidate in \
+            /tmp/iso/live/filesystem.squashfs \
+            /tmp/iso/rootfs.squashfs \
+            /tmp/iso/truenas.squashfs; do
+            if [ -f "$candidate" ]; then
+              SQUASHFS="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$SQUASHFS" ]; then
+            echo "ERROR: Could not find squashfs in ISO"
+            find /tmp/iso -name "*.squashfs" -o -name "*.img" 2>/dev/null || true
+            sudo umount /tmp/iso
+            exit 1
+          fi
+
+          echo "Found squashfs: $SQUASHFS"
+
+          # Mount the rootfs
+          sudo mkdir -p /tmp/rootfs
+          sudo mount -o loop "$SQUASHFS" /tmp/rootfs
+
+          # Find kernel version
+          KVER=$(ls /tmp/rootfs/usr/src/ | grep 'linux-headers-' | grep -i 'production\|truenas' | head -1 | sed 's/linux-headers-//')
+          if [ -z "$KVER" ]; then
+            echo "WARNING: No production kernel headers found, trying any kernel headers..."
+            KVER=$(ls /tmp/rootfs/usr/src/ | grep 'linux-headers-' | head -1 | sed 's/linux-headers-//')
+          fi
+
+          if [ -z "$KVER" ]; then
+            echo "ERROR: No kernel headers found in rootfs"
+            ls -la /tmp/rootfs/usr/src/ || true
+            sudo umount /tmp/rootfs
+            sudo umount /tmp/iso
+            exit 1
+          fi
+
+          echo "Kernel version: ${KVER}"
+          echo "KVER=${KVER}" >> "$GITHUB_ENV"
+
+          # Copy kernel headers to build directory
+          sudo mkdir -p /tmp/kernel-headers
+          sudo cp -a "/tmp/rootfs/usr/src/linux-headers-${KVER}" /tmp/kernel-headers/
+
+          # Also copy module build infrastructure if separate
+          if [ -d "/tmp/rootfs/lib/modules/${KVER}" ]; then
+            sudo mkdir -p /tmp/kernel-modules
+            sudo cp -a "/tmp/rootfs/lib/modules/${KVER}" /tmp/kernel-modules/
+          fi
+
+          # Cleanup mounts
+          sudo umount /tmp/rootfs
+          sudo umount /tmp/iso
+
+          echo "Kernel headers extracted successfully"
+          ls -la "/tmp/kernel-headers/linux-headers-${KVER}/"
+
+      # ── Build Hailo PCIe kernel module ──
+      - name: Clone hailort-drivers
+        run: |
+          git clone --depth 1 --branch v${{ inputs.hailo_driver_version }} \
+            https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers \
+            || git clone --depth 1 --branch hailo8 \
+              https://github.com/hailo-ai/hailort-drivers.git /tmp/hailort-drivers
+          echo "Checked out hailort-drivers:"
+          cd /tmp/hailort-drivers && git log --oneline -1
+
+      - name: Build hailo_pci kernel module
+        run: |
+          cd /tmp/hailort-drivers/linux/pcie
+          KERNEL_DIR="/tmp/kernel-headers/linux-headers-${KVER}"
+
+          echo "Building hailo_pci.ko against kernel ${KVER}..."
+          make KERNEL_DIR="$KERNEL_DIR" all
+
+          echo "=== Module info ==="
+          modinfo hailo_pci.ko
+          ls -lh hailo_pci.ko
+
+      # ── Build HailoRT userspace ──
+      - name: Clone hailort
+        run: |
+          git clone --depth 1 --branch v${{ inputs.hailo_driver_version }} \
+            https://github.com/hailo-ai/hailort.git /tmp/hailort \
+            || git clone --depth 1 --branch hailo8 \
+              https://github.com/hailo-ai/hailort.git /tmp/hailort
+          echo "Checked out hailort:"
+          cd /tmp/hailort && git log --oneline -1
+
+      - name: Build HailoRT library and CLI
+        run: |
+          cd /tmp/hailort
+          mkdir -p build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX=/usr \
+                ..
+          make -j$(nproc)
+          echo "=== Built artifacts ==="
+          find . -name "libhailort*" -o -name "hailortcli" | head -20
+
+      # ── Download firmware ──
+      - name: Download Hailo-8 firmware
+        run: |
+          cd /tmp/hailort-drivers
+          if [ -f download_firmware.sh ]; then
+            chmod +x download_firmware.sh
+            ./download_firmware.sh
+            FW_FILE=$(find . -name "hailo8_fw*.bin" -type f | head -1)
+            if [ -n "$FW_FILE" ]; then
+              cp "$FW_FILE" /tmp/hailo8_fw.bin
+              echo "Firmware downloaded: $(ls -lh /tmp/hailo8_fw.bin)"
+            else
+              echo "WARNING: Firmware download script ran but no .bin found"
+              find . -name "*.bin" -type f || true
+            fi
+          else
+            echo "WARNING: download_firmware.sh not found, checking for bundled firmware..."
+            FW_FILE=$(find /tmp/hailort-drivers /tmp/hailort -name "hailo8_fw*.bin" -type f 2>/dev/null | head -1)
+            if [ -n "$FW_FILE" ]; then
+              cp "$FW_FILE" /tmp/hailo8_fw.bin
+              echo "Found bundled firmware: $(ls -lh /tmp/hailo8_fw.bin)"
+            else
+              echo "ERROR: No firmware found. The sysext will be built without firmware."
+              echo "Users will need to manually place hailo8_fw.bin in /lib/firmware/hailo/"
+            fi
+          fi
+
+      # ── Assemble sysext ──
+      - name: Assemble sysext filesystem tree
+        run: |
+          SYSEXT_ROOT="/tmp/hailo-sysext"
+          mkdir -p "${SYSEXT_ROOT}"
+
+          # --- extension-release ---
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/extension-release.d"
+          echo "ID=_any" > "${SYSEXT_ROOT}/usr/lib/extension-release.d/extension-release.hailo"
+
+          # --- Kernel module ---
+          MOD_DIR="${SYSEXT_ROOT}/usr/lib/modules/${KVER}/extra"
+          mkdir -p "$MOD_DIR"
+          cp /tmp/hailort-drivers/linux/pcie/hailo_pci.ko "$MOD_DIR/"
+
+          # --- Firmware ---
+          if [ -f /tmp/hailo8_fw.bin ]; then
+            mkdir -p "${SYSEXT_ROOT}/usr/lib/firmware/hailo"
+            cp /tmp/hailo8_fw.bin "${SYSEXT_ROOT}/usr/lib/firmware/hailo/hailo8_fw.bin"
+          fi
+
+          # --- HailoRT shared library ---
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
+          LIBHAILORT=$(find /tmp/hailort/build -name "libhailort.so*" -not -type l | head -1)
+          if [ -n "$LIBHAILORT" ]; then
+            cp "$LIBHAILORT" "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu/"
+            LIBNAME=$(basename "$LIBHAILORT")
+            # Create soname symlinks
+            cd "${SYSEXT_ROOT}/usr/lib/x86_64-linux-gnu"
+            if [[ "$LIBNAME" =~ libhailort\.so\..* ]]; then
+              SONAME=$(echo "$LIBNAME" | sed 's/\(libhailort\.so\.[0-9]*\).*/\1/')
+              [ "$SONAME" != "$LIBNAME" ] && ln -sf "$LIBNAME" "$SONAME"
+              ln -sf "$LIBNAME" libhailort.so
+            fi
+            cd -
+          fi
+
+          # --- HailoRT CLI ---
+          mkdir -p "${SYSEXT_ROOT}/usr/bin"
+          HAILORT_CLI=$(find /tmp/hailort/build -name "hailortcli" -type f | head -1)
+          if [ -n "$HAILORT_CLI" ]; then
+            cp "$HAILORT_CLI" "${SYSEXT_ROOT}/usr/bin/hailortcli"
+            chmod +x "${SYSEXT_ROOT}/usr/bin/hailortcli"
+          fi
+
+          # --- systemd service ---
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/systemd/system/multi-user.target.wants"
+          cp sysext/usr/lib/systemd/system/hailo-load.service "${SYSEXT_ROOT}/usr/lib/systemd/system/"
+          ln -sf ../hailo-load.service "${SYSEXT_ROOT}/usr/lib/systemd/system/multi-user.target.wants/hailo-load.service"
+
+          # --- udev rules ---
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/udev/rules.d"
+          cp sysext/usr/lib/udev/rules.d/51-hailo-udev.rules "${SYSEXT_ROOT}/usr/lib/udev/rules.d/"
+
+          # --- Run depmod ---
+          sudo depmod -b "${SYSEXT_ROOT}" "${KVER}" 2>/dev/null || echo "depmod warning (non-fatal in cross-build)"
+
+          echo "=== Sysext tree ==="
+          find "${SYSEXT_ROOT}" -type f -o -type l | sort
+
+      - name: Create hailo.raw squashfs
+        run: |
+          mksquashfs /tmp/hailo-sysext hailo.raw -noappend -comp zstd
+          echo "=== hailo.raw ==="
+          ls -lh hailo.raw
+          echo ""
+          echo "=== Contents ==="
+          unsquashfs -l hailo.raw | head -40
+
+      - name: Generate checksums
+        run: |
+          sha256sum hailo.raw > hailo.raw.sha256
+          cat hailo.raw.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hailo-sysext-${{ inputs.truenas_version }}-hailort-${{ inputs.hailo_driver_version }}
+          path: |
+            hailo.raw
+            hailo.raw.sha256
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.truenas_version }}-hailo${{ inputs.hailo_driver_version }}
+          name: "TrueNAS ${{ inputs.truenas_version }} - Hailo ${{ inputs.hailo_driver_version }}"
+          body: |
+            ## Hailo-8 Sysext for TrueNAS SCALE ${{ inputs.truenas_version }} (${{ inputs.train_name }})
+
+            **HailoRT Driver:** ${{ inputs.hailo_driver_version }}
+            **Target Device:** Hailo-8 AI Accelerator (PCIe)
+
+            ### Included Components
+            - `hailo_pci.ko` — PCIe kernel module (compiled for this TrueNAS kernel)
+            - `libhailort.so` — HailoRT runtime library
+            - `hailortcli` — HailoRT command-line tool
+            - `hailo8_fw.bin` — Device firmware
+            - `hailo-load.service` — Systemd service for automatic module loading
+            - `51-hailo-udev.rules` — Udev rules for device permissions
+
+            ### Install
+            ```bash
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ inputs.truenas_version }}-hailo${{ inputs.hailo_driver_version }}/install.sh | sudo bash
+            ```
+
+            ### Verify
+            ```bash
+            hailortcli fw-control --identify
+            ls -la /dev/hailo*
+            ```
+
+            ### Checksums
+            See `hailo.raw.sha256` for verification.
+          files: |
+            hailo.raw
+            hailo.raw.sha256
+            scripts/install.sh
+            scripts/restore.sh
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
