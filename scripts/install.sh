@@ -3,6 +3,9 @@
 # All driver compilation happens on GitHub Actions — this script only
 # downloads and places the pre-built hailo.raw file.
 #
+# Firmware is proprietary and not in the release. This script downloads it
+# from Hailo's servers and injects it into the sysext squashfs at install time.
+#
 # Usage: curl -fsSL <release-url>/install.sh | sudo bash
 #    or: sudo ./install.sh [path-to-hailo.raw]
 #    or: sudo ./install.sh --pool=fast
@@ -46,6 +49,7 @@ done
 
 cleanup() {
     rm -f /tmp/hailo.raw /tmp/hailo.raw.sha256 /tmp/hailo8_fw.bin
+    rm -rf /tmp/hailo-sysext-unpack
 }
 trap cleanup EXIT INT TERM
 
@@ -113,10 +117,10 @@ except Exception as e:
     echo "Checksum OK"
 fi
 
-# --- Download Hailo-8 firmware BEFORE installing sysext ---
-# Firmware is proprietary and not included in the sysext.
-# We download first so we can abort cleanly if it fails, rather than
-# leaving the system with a sysext installed but no firmware.
+# --- Download Hailo-8 firmware and inject into sysext ---
+# Firmware is proprietary and not included in the release.
+# We download it from Hailo's servers and inject it into the squashfs
+# so it gets merged into the filesystem via systemd-sysext.
 echo ""
 echo "=== Downloading Hailo-8 firmware ==="
 
@@ -151,6 +155,21 @@ if [ ! -s /tmp/hailo8_fw.bin ]; then
 fi
 echo "Firmware downloaded: $(ls -lh /tmp/hailo8_fw.bin)"
 
+# --- Inject firmware into hailo.raw squashfs ---
+echo "Injecting firmware into hailo.raw..."
+if command -v unsquashfs &>/dev/null && command -v mksquashfs &>/dev/null; then
+    unsquashfs -d /tmp/hailo-sysext-unpack /tmp/hailo.raw
+    mkdir -p /tmp/hailo-sysext-unpack/usr/lib/firmware/hailo
+    cp /tmp/hailo8_fw.bin /tmp/hailo-sysext-unpack/usr/lib/firmware/hailo/hailo8_fw.bin
+    mksquashfs /tmp/hailo-sysext-unpack /tmp/hailo.raw -noappend -comp zstd
+    rm -rf /tmp/hailo-sysext-unpack
+    echo "Firmware injected into hailo.raw"
+else
+    echo "ERROR: squashfs-tools not found, cannot inject firmware into sysext"
+    echo "  Install squashfs-tools: apt-get install squashfs-tools"
+    exit 1
+fi
+
 echo ""
 echo "=== Installing hailo.raw ==="
 
@@ -179,12 +198,6 @@ zfs set readonly=on "${USR_DATASET}"
 # Re-merge sysext
 echo "Merging sysext..."
 systemd-sysext merge
-
-# --- Install firmware ---
-FW_DIR="/lib/firmware/hailo"
-mkdir -p "$FW_DIR"
-cp /tmp/hailo8_fw.bin "${FW_DIR}/hailo8_fw.bin"
-echo "Firmware installed: $(ls -lh "${FW_DIR}/hailo8_fw.bin")"
 
 # Load the kernel module
 echo "Loading Hailo kernel module..."
@@ -236,16 +249,11 @@ fi
 echo "Persistent config directory: ${PERSIST_DIR}"
 mkdir -p "$PERSIST_DIR"
 
-# --- Backup hailo.raw and firmware to persistent storage ---
+# --- Backup hailo.raw (with firmware inside) to persistent storage ---
 echo "Backing up hailo.raw to persistent storage..."
 cp /tmp/hailo.raw "${PERSIST_DIR}/hailo.raw"
 
-if [ -f "${FW_DIR}/hailo8_fw.bin" ]; then
-    echo "Backing up firmware to persistent storage..."
-    cp "${FW_DIR}/hailo8_fw.bin" "${PERSIST_DIR}/hailo8_fw.bin"
-fi
-
-# Save HailoRT version for postinit firmware recovery
+# Save HailoRT version for reference
 echo -n "$HAILO_VERSION" > "${PERSIST_DIR}/.hailo-driver-version"
 
 # --- Write POSTINIT script to persistent storage ---
@@ -257,6 +265,10 @@ cat > "${PERSIST_DIR}/hailo-postinit.sh" <<'POSTINIT_EOF'
 # TrueNAS POSTINIT script: reinstalls hailo.raw sysext after OS updates.
 # Stored on persistent pool; registered via midclt during install.
 # Idempotent — safe to run on every boot.
+#
+# The hailo.raw squashfs contains firmware (injected at install time),
+# so restoring the sysext also restores firmware. No separate firmware
+# handling is needed.
 
 set -uo pipefail
 
@@ -318,21 +330,6 @@ fi
 log "Merging sysext..."
 systemd-sysext merge
 
-# --- Restore firmware if missing ---
-FW_DIR="/lib/firmware/hailo"
-FW_PATH="${FW_DIR}/hailo8_fw.bin"
-if [ ! -f "$FW_PATH" ]; then
-    log "Firmware missing at ${FW_PATH}, restoring..."
-    mkdir -p "$FW_DIR"
-    if [ -f "${PERSIST_DIR}/hailo8_fw.bin" ]; then
-        cp "${PERSIST_DIR}/hailo8_fw.bin" "$FW_PATH"
-        log "Firmware restored from backup"
-    else
-        log "ERROR: No firmware backup at ${PERSIST_DIR}/hailo8_fw.bin"
-        log "  Re-run the install script to download firmware and set up persistence."
-    fi
-fi
-
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload
 depmod -a || log "WARNING: depmod failed"
@@ -375,8 +372,7 @@ echo ""
 echo "=== Persistence setup complete ==="
 echo ""
 echo "Persistent config: ${PERSIST_DIR}/"
-echo "  hailo.raw                — sysext backup for post-update reinstall"
-echo "  hailo8_fw.bin            — firmware backup"
+echo "  hailo.raw                — sysext backup (includes firmware)"
 echo "  .hailo-driver-version    — HailoRT version (informational)"
 echo "  hailo-postinit.sh        — runs on every boot (registered as POSTINIT)"
 echo ""

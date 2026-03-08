@@ -3,6 +3,10 @@
 # Stored on persistent pool; registered via midclt during install.
 # Idempotent — safe to run on every boot.
 #
+# The hailo.raw squashfs contains firmware (injected at install time),
+# so restoring the sysext also restores firmware. No separate firmware
+# handling is needed.
+#
 # NOTE: This script is also embedded inline in install.sh (heredoc).
 # Keep both copies in sync when making changes.
 
@@ -65,21 +69,6 @@ fi
 
 log "Merging sysext..."
 systemd-sysext merge
-
-# --- Restore firmware if missing ---
-FW_DIR="/lib/firmware/hailo"
-FW_PATH="${FW_DIR}/hailo8_fw.bin"
-if [ ! -f "$FW_PATH" ]; then
-    log "Firmware missing at ${FW_PATH}, restoring..."
-    mkdir -p "$FW_DIR"
-    if [ -f "${PERSIST_DIR}/hailo8_fw.bin" ]; then
-        cp "${PERSIST_DIR}/hailo8_fw.bin" "$FW_PATH"
-        log "Firmware restored from backup"
-    else
-        log "ERROR: No firmware backup at ${PERSIST_DIR}/hailo8_fw.bin"
-        log "  Re-run the install script to download firmware and set up persistence."
-    fi
-fi
 
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload
