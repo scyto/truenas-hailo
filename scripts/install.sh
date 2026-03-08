@@ -303,41 +303,45 @@ if [ ! -f "$HAILO_RAW_BACKUP" ]; then
     exit 0
 fi
 
-# --- Compare checksums ---
+# --- Compare checksums and reinstall if needed ---
+NEED_COPY=true
 if [ -f "$SYSEXT_TARGET" ]; then
     INSTALLED_SUM=$(sha256sum "$SYSEXT_TARGET" | awk '{print $1}')
     BACKUP_SUM=$(sha256sum "$HAILO_RAW_BACKUP" | awk '{print $1}')
     if [ "$INSTALLED_SUM" = "$BACKUP_SUM" ]; then
-        log "hailo.raw already matches backup, skipping"
-        exit 0
+        log "hailo.raw already matches backup, skipping copy"
+        NEED_COPY=false
+    else
+        log "hailo.raw differs from backup (update detected), reinstalling..."
     fi
-    log "hailo.raw differs from backup (update detected), reinstalling..."
 else
     log "hailo.raw missing, installing from backup..."
 fi
 
-# --- Reinstall hailo.raw ---
-log "Removing old hailo sysext..."
-rm -f /run/extensions/hailo.raw
-systemd-sysext refresh 2>/dev/null || true
+if [ "$NEED_COPY" = true ]; then
+    log "Removing old hailo sysext..."
+    rm -f /run/extensions/hailo.raw
+    systemd-sysext refresh 2>/dev/null || true
 
-log "Making /usr writable..."
-USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
-if [ -n "$USR_DATASET" ]; then
-    zfs set readonly=off "$USR_DATASET"
+    log "Making /usr writable..."
+    USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
+    if [ -n "$USR_DATASET" ]; then
+        zfs set readonly=off "$USR_DATASET"
+    fi
+
+    log "Copying hailo.raw from backup..."
+    if ! cp "$HAILO_RAW_BACKUP" "$SYSEXT_TARGET"; then
+        log "ERROR: Failed to copy hailo.raw from backup"
+        [ -n "$USR_DATASET" ] && zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
+        exit 1
+    fi
+
+    if [ -n "$USR_DATASET" ]; then
+        zfs set readonly=on "$USR_DATASET"
+    fi
 fi
 
-log "Copying hailo.raw from backup..."
-if ! cp "$HAILO_RAW_BACKUP" "$SYSEXT_TARGET"; then
-    log "ERROR: Failed to copy hailo.raw from backup"
-    [ -n "$USR_DATASET" ] && zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
-    exit 1
-fi
-
-if [ -n "$USR_DATASET" ]; then
-    zfs set readonly=on "$USR_DATASET"
-fi
-
+# --- Always activate sysext (symlink is on tmpfs, gone after reboot) ---
 log "Activating hailo sysext..."
 mkdir -p /run/extensions
 ln -sf "$SYSEXT_TARGET" /run/extensions/hailo.raw
@@ -353,7 +357,7 @@ else
     log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
 fi
 
-log "hailo.raw reinstalled successfully"
+log "Done"
 exit 0
 POSTINIT_EOF
 chmod +x "${PERSIST_DIR}/hailo-postinit.sh"
