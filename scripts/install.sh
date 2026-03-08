@@ -184,13 +184,7 @@ USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to 
 echo "Setting ${USR_DATASET} to writable..."
 zfs set readonly=off "${USR_DATASET}" || { echo "ERROR: Failed to make ${USR_DATASET} writable"; exit 1; }
 
-# Backup existing hailo.raw
-if [ -f "${HAILO_RAW}" ]; then
-    echo "Backing up existing hailo.raw..."
-    cp "${HAILO_RAW}" "${HAILO_RAW}.bak"
-fi
-
-# Install new hailo.raw
+# Install new hailo.raw (backup is on persistent pool, no need for .bak)
 echo "Installing new hailo.raw..."
 cp /tmp/hailo.raw "${HAILO_RAW}"
 

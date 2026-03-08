@@ -26,14 +26,9 @@ USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to 
 [ -z "$USR_DATASET" ] && { echo "ERROR: ZFS dataset for /usr is empty"; exit 1; }
 zfs set readonly=off "${USR_DATASET}" || { echo "ERROR: Failed to make ${USR_DATASET} writable"; exit 1; }
 
-# Remove hailo.raw (restore backup if it exists)
-if [ -f "${HAILO_BAK}" ]; then
-    echo "Restoring backup hailo.raw.bak..."
-    mv "${HAILO_BAK}" "${HAILO_RAW}"
-elif [ -f "${HAILO_RAW}" ]; then
-    echo "Removing hailo.raw..."
-    rm -f "${HAILO_RAW}"
-fi
+# Remove hailo.raw and any backup
+echo "Removing hailo.raw..."
+rm -f "${HAILO_RAW}" "${HAILO_BAK}"
 
 # Restore read-only
 zfs set readonly=on "${USR_DATASET}" || echo "WARNING: Failed to restore ${USR_DATASET} to read-only"
