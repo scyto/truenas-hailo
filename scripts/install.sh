@@ -45,7 +45,7 @@ for arg in "$@"; do
 done
 
 cleanup() {
-    rm -f /tmp/hailo.raw /tmp/hailo.raw.sha256
+    rm -f /tmp/hailo.raw /tmp/hailo.raw.sha256 /tmp/hailo8_fw.bin
 }
 trap cleanup EXIT INT TERM
 
@@ -113,6 +113,44 @@ except Exception as e:
     echo "Checksum OK"
 fi
 
+# --- Download Hailo-8 firmware BEFORE installing sysext ---
+# Firmware is proprietary and not included in the sysext.
+# We download first so we can abort cleanly if it fails, rather than
+# leaving the system with a sysext installed but no firmware.
+echo ""
+echo "=== Downloading Hailo-8 firmware ==="
+
+# Determine HailoRT version from release tag or .hailo-driver-version
+HAILO_VERSION=""
+if [ -n "${RELEASE_TAG:-}" ]; then
+    # Extract version from tag like v25.10.2.1-hailo4.20.0
+    HAILO_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*hailo\([0-9.]*\)$/\1/p')
+fi
+if [ -z "$HAILO_VERSION" ]; then
+    # Fallback: try to read from the repo's .hailo-driver-version
+    HAILO_VERSION=$(curl -sf "https://raw.githubusercontent.com/${REPO}/main/.hailo-driver-version" | tr -d '[:space:]') || true
+fi
+if [ -z "$HAILO_VERSION" ]; then
+    echo "WARNING: Could not determine HailoRT version, defaulting to 4.20.0"
+    HAILO_VERSION="4.20.0"
+fi
+
+echo "HailoRT version: ${HAILO_VERSION}"
+FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_VERSION}/FW/hailo8_fw.${HAILO_VERSION}.bin"
+
+echo "Downloading firmware from Hailo..."
+if ! curl -fSL "$FW_URL" -o /tmp/hailo8_fw.bin; then
+    echo "ERROR: Failed to download firmware from ${FW_URL}"
+    echo "  Cannot install sysext without firmware — aborting."
+    exit 1
+fi
+if [ ! -s /tmp/hailo8_fw.bin ]; then
+    echo "ERROR: Downloaded firmware is empty — aborting."
+    rm -f /tmp/hailo8_fw.bin
+    exit 1
+fi
+echo "Firmware downloaded: $(ls -lh /tmp/hailo8_fw.bin)"
+
 echo ""
 echo "=== Installing hailo.raw ==="
 
@@ -142,39 +180,11 @@ zfs set readonly=on "${USR_DATASET}"
 echo "Merging sysext..."
 systemd-sysext merge
 
-# --- Download Hailo-8 firmware from Hailo's servers ---
-# Firmware is proprietary and not included in the sysext.
-echo ""
-echo "=== Downloading Hailo-8 firmware ==="
-
-# Determine HailoRT version from release tag or .hailo-driver-version
-HAILO_VERSION=""
-if [ -n "${RELEASE_TAG:-}" ]; then
-    # Extract version from tag like v25.10.2.1-hailo4.20.0
-    HAILO_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*hailo\([0-9.]*\)$/\1/p')
-fi
-if [ -z "$HAILO_VERSION" ]; then
-    # Fallback: try to read from the repo's .hailo-driver-version
-    HAILO_VERSION=$(curl -sf "https://raw.githubusercontent.com/${REPO}/main/.hailo-driver-version" | tr -d '[:space:]') || true
-fi
-if [ -z "$HAILO_VERSION" ]; then
-    echo "WARNING: Could not determine HailoRT version, defaulting to 4.20.0"
-    HAILO_VERSION="4.20.0"
-fi
-
-echo "HailoRT version: ${HAILO_VERSION}"
-FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_VERSION}/FW/hailo8_fw.${HAILO_VERSION}.bin"
+# --- Install firmware ---
 FW_DIR="/lib/firmware/hailo"
-
 mkdir -p "$FW_DIR"
-echo "Downloading firmware from Hailo..."
-if curl -fSL "$FW_URL" -o "${FW_DIR}/hailo8_fw.bin"; then
-    [ -s "${FW_DIR}/hailo8_fw.bin" ] || { echo "ERROR: Downloaded firmware is empty"; rm -f "${FW_DIR}/hailo8_fw.bin"; }
-    echo "Firmware installed: $(ls -lh "${FW_DIR}/hailo8_fw.bin")"
-else
-    echo "WARNING: Failed to download firmware from ${FW_URL}"
-    echo "  You may need to manually place hailo8_fw.bin in ${FW_DIR}/"
-fi
+cp /tmp/hailo8_fw.bin "${FW_DIR}/hailo8_fw.bin"
+echo "Firmware installed: $(ls -lh "${FW_DIR}/hailo8_fw.bin")"
 
 # Load the kernel module
 echo "Loading Hailo kernel module..."
@@ -317,19 +327,9 @@ if [ ! -f "$FW_PATH" ]; then
     if [ -f "${PERSIST_DIR}/hailo8_fw.bin" ]; then
         cp "${PERSIST_DIR}/hailo8_fw.bin" "$FW_PATH"
         log "Firmware restored from backup"
-    elif [ -f "${PERSIST_DIR}/.hailo-driver-version" ]; then
-        HAILO_VER=$(cat "${PERSIST_DIR}/.hailo-driver-version" | tr -d '[:space:]')
-        FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/${HAILO_VER}/FW/hailo8_fw.${HAILO_VER}.bin"
-        log "Downloading firmware v${HAILO_VER} from Hailo..."
-        if curl -fSL "$FW_URL" -o "$FW_PATH" 2>/dev/null && [ -s "$FW_PATH" ]; then
-            log "Firmware downloaded successfully"
-            cp "$FW_PATH" "${PERSIST_DIR}/hailo8_fw.bin" 2>/dev/null || true
-        else
-            log "WARNING: Failed to download firmware from ${FW_URL}"
-            rm -f "$FW_PATH"
-        fi
     else
-        log "WARNING: No firmware backup or version info available"
+        log "ERROR: No firmware backup at ${PERSIST_DIR}/hailo8_fw.bin"
+        log "  Re-run the install script to download firmware and set up persistence."
     fi
 fi
 
@@ -377,7 +377,7 @@ echo ""
 echo "Persistent config: ${PERSIST_DIR}/"
 echo "  hailo.raw                — sysext backup for post-update reinstall"
 echo "  hailo8_fw.bin            — firmware backup"
-echo "  .hailo-driver-version    — HailoRT version for firmware recovery"
+echo "  .hailo-driver-version    — HailoRT version (informational)"
 echo "  hailo-postinit.sh        — runs on every boot (registered as POSTINIT)"
 echo ""
 echo "The Hailo-8 driver will survive TrueNAS updates and reboots."
