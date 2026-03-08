@@ -76,8 +76,12 @@ ldconfig
 
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload
-depmod -a || log "WARNING: depmod failed"
-modprobe hailo_pci || log "WARNING: modprobe hailo_pci failed (device may not be present)"
+HAILO_KO="/usr/lib/modules/$(uname -r)/extra/hailo_pci.ko"
+if [ -f "$HAILO_KO" ]; then
+    insmod "$HAILO_KO" || log "WARNING: insmod hailo_pci failed (device may not be present)"
+else
+    log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
+fi
 
 log "hailo.raw reinstalled successfully"
 exit 0

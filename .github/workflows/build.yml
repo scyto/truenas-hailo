@@ -82,7 +82,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /tmp/kernel-headers
-          key: kernel-headers-v2-${{ inputs.truenas_version }}
+          key: kernel-headers-v3-${{ inputs.truenas_version }}
 
       - name: Extract kernel headers from TrueNAS ISO
         if: steps.headers-cache.outputs.cache-hit != 'true'
@@ -183,17 +183,32 @@ jobs:
             exit 1
           fi
 
-          echo "Kernel version: ${KVER}"
+          echo "Header package version: ${KVER}"
+
+          # Detect the REAL kernel version (what uname -r returns on the target).
+          # The header directory name (e.g. truenas-production-amd64) may differ
+          # from the actual kernel release string (e.g. 6.12.33-production+truenas).
+          REAL_KVER=""
+          # Method 1: kernel.release in headers
+          if [ -f "/tmp/rootfs/usr/src/linux-headers-${KVER}/include/config/kernel.release" ]; then
+            REAL_KVER=$(cat "/tmp/rootfs/usr/src/linux-headers-${KVER}/include/config/kernel.release" | tr -d '[:space:]')
+          fi
+          # Method 2: /lib/modules directory name
+          if [ -z "$REAL_KVER" ]; then
+            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | head -1)
+          fi
+          # Method 3: fall back to header dir name
+          if [ -z "$REAL_KVER" ]; then
+            REAL_KVER="$KVER"
+          fi
+          echo "Real kernel version: ${REAL_KVER}"
 
           # Copy kernel headers to build directory
           sudo mkdir -p /tmp/kernel-headers
           sudo cp -a "/tmp/rootfs/usr/src/linux-headers-${KVER}" /tmp/kernel-headers/
 
-          # Also copy module build infrastructure if available
-          if [ -d "/tmp/rootfs/lib/modules/${KVER}" ]; then
-            sudo mkdir -p "/tmp/kernel-headers/modules-${KVER}"
-            sudo cp -a "/tmp/rootfs/lib/modules/${KVER}" "/tmp/kernel-headers/modules-${KVER}/"
-          fi
+          # Save real kernel version for later steps
+          echo "$REAL_KVER" | sudo tee /tmp/kernel-headers/.real-kver
 
           # Cleanup
           sudo umount /tmp/rootfs 2>/dev/null || true
@@ -207,7 +222,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /tmp/kernel-headers
-          key: kernel-headers-v2-${{ inputs.truenas_version }}
+          key: kernel-headers-v3-${{ inputs.truenas_version }}
 
       - name: Detect kernel version from cached headers
         run: |
@@ -223,14 +238,19 @@ jobs:
             ls -la /tmp/kernel-headers/
             exit 1
           fi
-          echo "Kernel version: ${KVER}"
+          echo "Header package version: ${KVER}"
           echo "KVER=${KVER}" >> "$GITHUB_ENV"
 
-          # Restore module build infrastructure if cached
-          if [ -d "/tmp/kernel-headers/modules-${KVER}" ]; then
-            sudo mkdir -p /tmp/kernel-modules
-            sudo cp -a "/tmp/kernel-headers/modules-${KVER}/${KVER}" /tmp/kernel-modules/
+          # Read real kernel version (what uname -r returns on the target)
+          REAL_KVER=""
+          if [ -f "/tmp/kernel-headers/.real-kver" ]; then
+            REAL_KVER=$(cat /tmp/kernel-headers/.real-kver | tr -d '[:space:]')
           fi
+          if [ -z "$REAL_KVER" ]; then
+            REAL_KVER="$KVER"
+          fi
+          echo "Real kernel version: ${REAL_KVER}"
+          echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
 
       # ── Build Hailo PCIe kernel module ──
       - name: Clone hailort-drivers
@@ -314,7 +334,8 @@ jobs:
           echo "ID=_any" > "${SYSEXT_ROOT}/usr/lib/extension-release.d/extension-release.hailo"
 
           # --- Kernel module ---
-          MOD_DIR="${SYSEXT_ROOT}/usr/lib/modules/${KVER}/extra"
+          # Use REAL_KVER (e.g. 6.12.33-production+truenas) not KVER (header dir name)
+          MOD_DIR="${SYSEXT_ROOT}/usr/lib/modules/${REAL_KVER}/extra"
           mkdir -p "$MOD_DIR"
           cp /tmp/hailort-drivers/linux/pcie/hailo_pci.ko "$MOD_DIR/"
 
@@ -351,8 +372,9 @@ jobs:
           mkdir -p "${SYSEXT_ROOT}/usr/lib/udev/rules.d"
           cp sysext/usr/lib/udev/rules.d/51-hailo-udev.rules "${SYSEXT_ROOT}/usr/lib/udev/rules.d/"
 
-          # --- Run depmod ---
-          sudo depmod -b "${SYSEXT_ROOT}" "${KVER}" 2>/dev/null || echo "depmod warning (non-fatal in cross-build)"
+          # NOTE: We do NOT run depmod here. Including modules.dep in the sysext
+          # would replace the base system's module database via overlayfs, breaking
+          # all other modules. Instead, the hailo-load.service uses insmod directly.
 
           echo "=== Sysext tree ==="
           find "${SYSEXT_ROOT}" -type f -o -type l | sort

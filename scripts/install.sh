@@ -204,10 +204,15 @@ ln -sf "${HAILO_RAW}" /run/extensions/hailo.raw
 systemd-sysext refresh
 ldconfig
 
-# Load the kernel module
+# Load the kernel module (use insmod directly — /lib/modules is read-only on TrueNAS
+# so depmod can't update module deps, and modprobe can't find modules without it)
 echo "Loading Hailo kernel module..."
-depmod -a || echo "WARNING: depmod failed"
-modprobe hailo_pci || echo "WARNING: modprobe hailo_pci failed (device may not be present)"
+HAILO_KO="/usr/lib/modules/$(uname -r)/extra/hailo_pci.ko"
+if [ -f "$HAILO_KO" ]; then
+    insmod "$HAILO_KO" || echo "WARNING: insmod hailo_pci failed (device may not be present)"
+else
+    echo "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
+fi
 
 echo ""
 echo "=== Installation complete ==="
@@ -341,8 +346,12 @@ ldconfig
 
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload
-depmod -a || log "WARNING: depmod failed"
-modprobe hailo_pci || log "WARNING: modprobe hailo_pci failed (device may not be present)"
+HAILO_KO="/usr/lib/modules/$(uname -r)/extra/hailo_pci.ko"
+if [ -f "$HAILO_KO" ]; then
+    insmod "$HAILO_KO" || log "WARNING: insmod hailo_pci failed (device may not be present)"
+else
+    log "WARNING: hailo_pci.ko not found at ${HAILO_KO}"
+fi
 
 log "hailo.raw reinstalled successfully"
 exit 0

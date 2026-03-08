@@ -6,7 +6,7 @@ Before=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/modprobe hailo_pci
+ExecStart=/bin/bash -c '/sbin/insmod /usr/lib/modules/$(uname -r)/extra/hailo_pci.ko'
 ExecStart=-/usr/bin/udevadm trigger --subsystem-match=hailo_chardev
 Restart=on-failure
 RestartSec=5s
