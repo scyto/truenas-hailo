@@ -77,7 +77,15 @@ jobs:
           path: /tmp/truenas.iso
           key: truenas-iso-${{ inputs.truenas_version }}
 
+      - name: Restore cached kernel headers
+        id: headers-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/kernel-headers
+          key: kernel-headers-${{ inputs.truenas_version }}
+
       - name: Extract kernel headers from TrueNAS ISO
+        if: steps.headers-cache.outputs.cache-hit != 'true'
         run: |
           # TrueNAS ISO structure:
           #   /live/filesystem.squashfs  — installer-only environment (NO kernel headers)
@@ -172,7 +180,6 @@ jobs:
           fi
 
           echo "Kernel version: ${KVER}"
-          echo "KVER=${KVER}" >> "$GITHUB_ENV"
 
           # Copy kernel headers to build directory
           sudo mkdir -p /tmp/kernel-headers
@@ -180,8 +187,8 @@ jobs:
 
           # Also copy module build infrastructure if available
           if [ -d "/tmp/rootfs/lib/modules/${KVER}" ]; then
-            sudo mkdir -p /tmp/kernel-modules
-            sudo cp -a "/tmp/rootfs/lib/modules/${KVER}" /tmp/kernel-modules/
+            sudo mkdir -p "/tmp/kernel-headers/modules-${KVER}"
+            sudo cp -a "/tmp/rootfs/lib/modules/${KVER}" "/tmp/kernel-headers/modules-${KVER}/"
           fi
 
           # Cleanup
@@ -189,7 +196,37 @@ jobs:
           sudo umount /tmp/iso 2>/dev/null || true
 
           echo "Kernel headers extracted successfully"
-          ls -la "/tmp/kernel-headers/linux-headers-${KVER}/"
+          ls -la /tmp/kernel-headers/
+
+      - name: Save kernel headers to cache
+        if: steps.headers-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/kernel-headers
+          key: kernel-headers-${{ inputs.truenas_version }}
+
+      - name: Detect kernel version from cached headers
+        run: |
+          KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -E '^[0-9]+\.' | grep -i 'production' | head -1)
+          if [ -z "$KVER" ]; then
+            KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -E '^[0-9]+\.' | head -1)
+          fi
+          if [ -z "$KVER" ]; then
+            KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | head -1 | sed 's/linux-headers-//')
+          fi
+          if [ -z "$KVER" ]; then
+            echo "ERROR: No kernel headers found in cache"
+            ls -la /tmp/kernel-headers/
+            exit 1
+          fi
+          echo "Kernel version: ${KVER}"
+          echo "KVER=${KVER}" >> "$GITHUB_ENV"
+
+          # Restore module build infrastructure if cached
+          if [ -d "/tmp/kernel-headers/modules-${KVER}" ]; then
+            sudo mkdir -p /tmp/kernel-modules
+            sudo cp -a "/tmp/kernel-headers/modules-${KVER}/${KVER}" /tmp/kernel-modules/
+          fi
 
       # ── Build Hailo PCIe kernel module ──
       - name: Clone hailort-drivers
@@ -219,7 +256,15 @@ jobs:
           ls -lh hailo_pci.ko
 
       # ── Build HailoRT userspace ──
+      - name: Restore cached HailoRT build
+        id: hailort-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/hailort/build
+          key: hailort-build-${{ inputs.hailo_driver_version }}
+
       - name: Clone hailort
+        if: steps.hailort-cache.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch v${{ inputs.hailo_driver_version }} \
             https://github.com/hailo-ai/hailort.git /tmp/hailort || {
@@ -234,6 +279,7 @@ jobs:
           cd /tmp/hailort && git log --oneline -1
 
       - name: Build HailoRT library and CLI
+        if: steps.hailort-cache.outputs.cache-hit != 'true'
         run: |
           cd /tmp/hailort
           mkdir -p build && cd build
@@ -243,6 +289,13 @@ jobs:
           make -j$(nproc)
           echo "=== Built artifacts ==="
           find . -name "libhailort*" -o -name "hailortcli" | head -20
+
+      - name: Save HailoRT build to cache
+        if: steps.hailort-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/hailort/build
+          key: hailort-build-${{ inputs.hailo_driver_version }}
 
       # ── Assemble sysext ──
       # NOTE: Firmware (hailo8_fw.bin) is NOT included in the sysext.
