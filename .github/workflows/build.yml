@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     steps:
@@ -147,8 +147,15 @@ jobs:
           echo "=== /usr/src contents ==="
           ls -la /tmp/rootfs/usr/src/ 2>/dev/null || echo "(empty or missing)"
 
-          KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | grep -i 'production\|truenas' | head -1 | sed 's/linux-headers-//')
+          # Prefer production headers with a real version number (e.g. 6.6.x-production+truenas)
+          # Skip metapackage symlinks like "linux-headers-truenas-production-amd64"
+          KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -E '^[0-9]+\.' | grep -i 'production' | head -1)
           if [ -z "$KVER" ]; then
+            # Fall back to any versioned headers
+            KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -E '^[0-9]+\.' | head -1)
+          fi
+          if [ -z "$KVER" ]; then
+            # Last resort: any headers at all
             KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | head -1 | sed 's/linux-headers-//')
           fi
 
