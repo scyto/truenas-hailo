@@ -101,5 +101,12 @@ else
     fi
 fi
 
+# --- Reload udev rules from sysext so /dev/hailo0 gets correct permissions ---
+log "Reloading udev rules..."
+udevadm control --reload-rules 2>/dev/null || true
+if [ -e /dev/hailo0 ]; then
+    udevadm trigger /dev/hailo0 2>/dev/null || true
+fi
+
 log "Done"
 exit 0
