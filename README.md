@@ -2,6 +2,15 @@
 
 A systemd-sysext package that adds [Hailo-8](https://hailo.ai/) AI accelerator support to TrueNAS SCALE. Primarily useful for running [Frigate NVR](https://frigate.video/) with hardware-accelerated AI object detection.
 
+## Documentation
+
+| Doc | Contents |
+| --- | --- |
+| [Quick Start](#quick-start) | Install, verify, uninstall |
+| [docs/install.md](docs/install.md) | Install options, specific versions, persistence, scripts reference |
+| [docs/build.md](docs/build.md) | Build process, firmware handling, automated updates, custom builds |
+| [docs/architecture.md](docs/architecture.md) | Deep technical reference — sysext structure, read-only constraints, NVIDIA comparison |
+
 ## What's Included
 
 The `hailo.raw` sysext contains:
@@ -104,14 +113,6 @@ model:
 - The `hailort-drivers` repo uses the **`hailo8` branch** for Hailo-8 support. The `master` branch only supports Hailo-10/15.
 - Secure Boot: The unsigned kernel module may require disabling Secure Boot.
 - If firmware download fails during installation, the script aborts — the sysext will not be installed without firmware.
-
-## Documentation
-
-| Doc | Contents |
-| --- | --- |
-| [docs/install.md](docs/install.md) | Install options, specific versions, persistence, scripts reference |
-| [docs/build.md](docs/build.md) | Build process, firmware handling, automated updates, custom builds |
-| [docs/architecture.md](docs/architecture.md) | Deep technical reference — sysext structure, read-only constraints, NVIDIA comparison |
 
 ## License
 
