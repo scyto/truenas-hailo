@@ -16,9 +16,10 @@ if lsmod | grep -q hailo_pci; then
     rmmod hailo_pci || echo "WARNING: Failed to unload hailo_pci"
 fi
 
-# Unmerge sysext
-echo "Unmerging sysext..."
-systemd-sysext unmerge
+# Remove hailo sysext symlink and refresh
+echo "Removing hailo sysext..."
+rm -f /run/extensions/hailo.raw
+systemd-sysext refresh 2>/dev/null || true
 
 # Make /usr writable
 USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr (are you running as root?)"; exit 1; }
@@ -36,10 +37,6 @@ fi
 
 # Restore read-only
 zfs set readonly=on "${USR_DATASET}" || echo "WARNING: Failed to restore ${USR_DATASET} to read-only"
-
-# Re-merge sysext
-echo "Merging sysext..."
-systemd-sysext merge
 
 echo ""
 echo "=== Restore complete ==="

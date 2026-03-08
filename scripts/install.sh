@@ -173,8 +173,10 @@ fi
 echo ""
 echo "=== Installing hailo.raw ==="
 
-# Unmerge sysext for modification
-systemd-sysext unmerge
+# Remove hailo from sysext before modifying
+echo "Removing old hailo sysext symlink..."
+rm -f /run/extensions/hailo.raw
+systemd-sysext refresh 2>/dev/null || true
 
 # Make /usr writable
 USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr"; exit 1; }
@@ -195,9 +197,12 @@ cp /tmp/hailo.raw "${HAILO_RAW}"
 # Restore read-only
 zfs set readonly=on "${USR_DATASET}"
 
-# Re-merge sysext
-echo "Merging sysext..."
-systemd-sysext merge
+# Activate sysext via symlink + refresh (TrueNAS middleware pattern)
+echo "Activating hailo sysext..."
+mkdir -p /run/extensions
+ln -sf "${HAILO_RAW}" /run/extensions/hailo.raw
+systemd-sysext refresh
+ldconfig
 
 # Load the kernel module
 echo "Loading Hailo kernel module..."
@@ -307,8 +312,9 @@ else
 fi
 
 # --- Reinstall hailo.raw ---
-log "Unmerging sysext..."
-systemd-sysext unmerge 2>/dev/null || true
+log "Removing old hailo sysext..."
+rm -f /run/extensions/hailo.raw
+systemd-sysext refresh 2>/dev/null || true
 
 log "Making /usr writable..."
 USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
@@ -327,8 +333,11 @@ if [ -n "$USR_DATASET" ]; then
     zfs set readonly=on "$USR_DATASET"
 fi
 
-log "Merging sysext..."
-systemd-sysext merge
+log "Activating hailo sysext..."
+mkdir -p /run/extensions
+ln -sf "$SYSEXT_TARGET" /run/extensions/hailo.raw
+systemd-sysext refresh
+ldconfig
 
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload

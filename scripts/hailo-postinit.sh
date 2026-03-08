@@ -47,8 +47,9 @@ else
 fi
 
 # --- Reinstall hailo.raw ---
-log "Unmerging sysext..."
-systemd-sysext unmerge 2>/dev/null || true
+log "Removing old hailo sysext..."
+rm -f /run/extensions/hailo.raw
+systemd-sysext refresh 2>/dev/null || true
 
 log "Making /usr writable..."
 USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null)
@@ -67,8 +68,11 @@ if [ -n "$USR_DATASET" ]; then
     zfs set readonly=on "$USR_DATASET"
 fi
 
-log "Merging sysext..."
-systemd-sysext merge
+log "Activating hailo sysext..."
+mkdir -p /run/extensions
+ln -sf "$SYSEXT_TARGET" /run/extensions/hailo.raw
+systemd-sysext refresh
+ldconfig
 
 log "Reloading systemd and loading Hailo module..."
 systemctl daemon-reload
