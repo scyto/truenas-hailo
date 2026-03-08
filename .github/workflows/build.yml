@@ -33,7 +33,10 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    # Use ubuntu-22.04 (GLIBC 2.35) so binaries are compatible with
+    # TrueNAS SCALE (Debian Bookworm, GLIBC 2.36). Ubuntu 24.04 has
+    # GLIBC 2.39 which is too new.
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
 
     steps:
@@ -285,7 +288,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /tmp/hailort/build
-          key: hailort-build-${{ inputs.hailo_driver_version }}
+          key: hailort-build-v2-${{ inputs.hailo_driver_version }}
 
       - name: Clone hailort
         if: steps.hailort-cache.outputs.cache-hit != 'true'
@@ -319,7 +322,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: /tmp/hailort/build
-          key: hailort-build-${{ inputs.hailo_driver_version }}
+          key: hailort-build-v2-${{ inputs.hailo_driver_version }}
 
       # ── Assemble sysext ──
       # NOTE: Firmware (hailo8_fw.bin) is NOT included in the sysext.
