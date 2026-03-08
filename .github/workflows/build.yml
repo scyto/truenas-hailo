@@ -91,7 +91,7 @@ jobs:
           UPDATE_FILE="/tmp/iso/TrueNAS-SCALE.update"
           if [ -f "$UPDATE_FILE" ]; then
             echo "Found TrueNAS-SCALE.update ($(du -h "$UPDATE_FILE" | cut -f1)), extracting rootfs.squashfs..."
-            sudo mkdir -p /tmp/update-contents
+            sudo rm -rf /tmp/update-contents
             sudo unsquashfs -d /tmp/update-contents "$UPDATE_FILE" rootfs.squashfs || {
               echo "ERROR: Failed to extract rootfs.squashfs from .update file"
               sudo umount /tmp/iso
@@ -108,11 +108,12 @@ jobs:
             fi
 
             echo "Extracting kernel headers from rootfs.squashfs..."
-            sudo mkdir -p /tmp/rootfs
+            sudo rm -rf /tmp/rootfs
             # Extract only /usr/src and /lib/modules to save time and disk
             sudo unsquashfs -d /tmp/rootfs "$ROOTFS_SQUASHFS" 'usr/src/linux-headers-*' 'lib/modules/*' || {
               echo "WARNING: Selective extract failed, trying full extract..."
-              sudo unsquashfs -f -d /tmp/rootfs "$ROOTFS_SQUASHFS"
+              sudo rm -rf /tmp/rootfs
+              sudo unsquashfs -d /tmp/rootfs "$ROOTFS_SQUASHFS"
             }
           else
             echo "No TrueNAS-SCALE.update found, falling back to live/filesystem.squashfs..."
