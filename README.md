@@ -7,28 +7,65 @@ A systemd-sysext package that adds [Hailo-8](https://hailo.ai/) AI accelerator s
 The `hailo.raw` sysext contains:
 
 | Component | Description |
-|-----------|-------------|
+| --- | --- |
 | `hailo_pci.ko` | PCIe kernel module (compiled for exact TrueNAS kernel) |
 | `libhailort.so` | HailoRT runtime library |
 | `hailortcli` | HailoRT command-line tool |
-| `hailo8_fw.bin` | Device firmware |
 | `hailo-load.service` | Systemd service for automatic module loading |
 | `51-hailo-udev.rules` | Udev rules for `/dev/hailo*` permissions |
 
+> **Note:** Hailo-8 firmware (`hailo8_fw.bin`) is **not** included in the release.
+> It is proprietary (Hailo's EULA prohibits redistribution) and is downloaded
+> directly from Hailo's servers during installation.
+
 ## Quick Start
 
+### Prerequisites
+
+- TrueNAS SCALE 25.10.x (Goldeye) or compatible
+- Hailo-8 PCIe AI accelerator installed and visible (`lspci | grep Hailo`)
+- Root/sudo access
+- Internet access (to download the release and firmware)
+
 ### Install
+
+The simplest way — auto-detects your TrueNAS version, downloads the matching release, fetches firmware from Hailo, and sets up persistence:
 
 ```bash
 curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh | sudo bash
 ```
 
-Or with explicit pool for persistence:
+With an explicit pool for persistence:
 
 ```bash
 curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/install.sh -o install.sh
 sudo bash install.sh --pool=fast
 ```
+
+With a local `hailo.raw` file (e.g., downloaded manually):
+
+```bash
+sudo bash install.sh /path/to/hailo.raw
+```
+
+#### Install Options
+
+| Option | Description |
+| --- | --- |
+| `--pool=NAME` | ZFS pool for persistent config (e.g., `fast`) |
+| `--persist-path=PATH` | Exact path for persistent config directory |
+| `--help` | Show usage help |
+
+### What the Install Script Does
+
+1. **Downloads `hailo.raw`** from the GitHub release matching your TrueNAS version (or uses a local file)
+2. **Verifies the checksum** (SHA256)
+3. **Downloads Hailo-8 firmware** directly from Hailo's S3 servers (not redistributed by this project)
+4. **Injects firmware** into the sysext squashfs (unpacks, adds firmware, repacks)
+5. **Installs the sysext** to `/usr/share/truenas/sysext-extensions/hailo.raw`
+6. **Activates the sysext** via TrueNAS's symlink + refresh pattern
+7. **Loads the kernel module** via `insmod`
+8. **Sets up persistence** (see below)
 
 ### Verify
 
@@ -36,8 +73,14 @@ sudo bash install.sh --pool=fast
 # Check device is detected
 ls -la /dev/hailo*
 
-# Query firmware
-hailortcli fw-control --identify
+# Check kernel module is loaded
+lsmod | grep hailo
+
+# Check PCI device has driver bound
+lspci -v | grep -A2 Hailo
+
+# Query firmware (hailortcli 4.21+ syntax)
+sudo hailortcli fw-control identify
 ```
 
 ### Uninstall
@@ -46,20 +89,85 @@ hailortcli fw-control --identify
 curl -fsSL https://github.com/scyto/truenas-hailo/releases/latest/download/restore.sh | sudo bash
 ```
 
+This removes the sysext, deregisters the POSTINIT script, and cleans up persistent storage.
+
+## Persistence
+
+TrueNAS updates replace the rootfs, which wipes `/usr/` and any installed sysext. The install script sets up automatic recovery:
+
+### Recovery Process
+
+1. **Backup**: The sysext (with firmware already injected) is copied to a persistent ZFS pool
+2. **POSTINIT script**: Registered with TrueNAS middleware, runs on every boot
+3. On boot, the script compares checksums — if the installed sysext differs from the backup (indicating a TrueNAS update) or is missing, it reinstalls from the backup
+4. No network access is needed at boot — firmware is already inside the backed-up sysext
+
+### Persistent Storage Layout
+
+```text
+/mnt/<pool>/.config/hailo/
+├── hailo.raw                ← Sysext backup (includes firmware)
+├── .hailo-driver-version    ← HailoRT version (informational)
+└── hailo-postinit.sh        ← Boot script (registered as POSTINIT)
+```
+
+### Pool Selection
+
+The install script selects a pool in this order:
+
+1. `--persist-path=PATH` — use this exact path (highest priority)
+2. `--pool=NAME` — use `/mnt/<NAME>/.config/hailo`
+3. **Auto-detect** — first ZFS pool that isn't `boot-pool`
+
+The POSTINIT script finds the config at boot by scanning `/mnt/*/.config/hailo/`, so it works even if the pool name changes.
+
 ## Using with Frigate
 
-After installing the sysext, configure your Frigate app to pass through the Hailo device:
+After installing the sysext, configure Frigate to use the Hailo-8:
 
-1. In TrueNAS Apps, edit your Frigate configuration
-2. Add device mapping: `/dev/hailo0:/dev/hailo0`
-3. Configure Frigate's `detectors` section:
+### 1. Pass Through the Device
+
+In TrueNAS Apps, edit your Frigate app and add the device mapping:
+
+```text
+/dev/hailo0:/dev/hailo0
+```
+
+### 2. Configure Frigate Detectors
+
+In your Frigate `config.yaml`:
 
 ```yaml
 detectors:
-  hailo:
-    type: hailo8
-    device: /dev/hailo0
+  hailo8l:
+    type: hailo8l    # Use hailo8l for both Hailo-8 and Hailo-8L
+    device: PCIe
+
+model:
+  width: 640
+  height: 640
+  input_tensor: nhwc
+  input_pixel_format: rgb
+  input_dtype: int
+  model_type: yolo-generic
 ```
+
+> **Note:** Frigate uses `hailo8l` as the detector type for **both** Hailo-8 and Hailo-8L devices.
+
+For a larger model (Hailo-8 has more capacity than 8L), add a `path` to the model section:
+
+```yaml
+model:
+  width: 640
+  height: 640
+  input_tensor: nhwc
+  input_pixel_format: rgb
+  input_dtype: int
+  model_type: yolo-generic
+  path: https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.17.0/hailo8/yolov8m.hef
+```
+
+You can keep `ffmpeg.hwaccel_args: preset-nvidia` if you have an NVIDIA GPU — video decoding (GPU) and AI detection (Hailo) are independent.
 
 ## How It Works
 
@@ -68,46 +176,67 @@ detectors:
 Unlike the [NVIDIA sysext](https://github.com/scyto/truenas-nvidia-blackwell) which requires the full TrueNAS `scale-build` pipeline (~5-6 hours), this project compiles the Hailo driver standalone (~15-30 minutes):
 
 1. Downloads the TrueNAS ISO for the target version
-2. Extracts kernel headers from the rootfs
-3. Compiles `hailo_pci.ko` against those exact headers
-4. Builds HailoRT userspace from source
-5. Packages everything as a squashfs sysext image
+2. Extracts kernel headers from the nested rootfs squashfs
+3. Detects the real kernel version (e.g., `6.12.33-production+truenas`)
+4. Compiles `hailo_pci.ko` with gcc-12 against those exact headers
+5. Builds HailoRT userspace (libhailort, hailortcli) from source
+6. Packages everything as a squashfs sysext image (without firmware)
 
-### Persistence
+The build runs on ubuntu-22.04 for GLIBC compatibility with TrueNAS (Debian Bookworm).
 
-TrueNAS updates wipe `/usr`, which would remove the sysext. The install script sets up:
+### Firmware Handling
 
-- **Backup**: `hailo.raw` is copied to a persistent ZFS pool (`/mnt/<pool>/.config/hailo/`)
-- **POSTINIT script**: Registered with TrueNAS, runs on every boot. Detects if the installed sysext differs from the backup (indicating a TrueNAS update) and reinstalls automatically.
+Hailo-8 firmware is proprietary and this project does not redistribute it. Instead:
+
+- At **install time**: firmware is downloaded from Hailo's S3 servers and injected into the sysext squashfs
+- At **boot time**: the backed-up sysext already contains firmware — no network access needed
+- The firmware version is determined from the release tag (e.g., `v25.10.2.1-hailo4.21.0` → version `4.21.0`)
+
+### TrueNAS-Specific Details
+
+- **Sysext activation** uses TrueNAS's middleware pattern (symlink in `/run/extensions/` + `systemd-sysext refresh`), not the standard `systemd-sysext merge`
+- **Module loading** uses `insmod` instead of `modprobe` because `/lib/modules` is on a read-only ZFS dataset where `depmod` cannot write
+- **Firmware** is injected into the sysext squashfs because `/lib/firmware` is also read-only
 
 ### Automated Updates
 
-Two weekly GitHub Actions workflows:
+Two weekly GitHub Actions workflows monitor for updates:
 
-- **Monday**: Checks for new TrueNAS SCALE releases → auto-triggers rebuild
+- **Monday**: Checks for new TrueNAS SCALE releases → auto-triggers rebuild (new kernel may need recompiled module)
 - **Wednesday**: Checks for new HailoRT releases → creates GitHub issue for manual review
+
+## Scripts Reference
+
+| Script | Purpose |
+| --- | --- |
+| `scripts/install.sh` | Downloads release, fetches firmware, injects into sysext, installs, sets up persistence |
+| `scripts/restore.sh` | Uninstalls sysext, deregisters POSTINIT, cleans up persistent storage |
+| `scripts/hailo-postinit.sh` | Boot-time recovery script (also embedded in install.sh as heredoc) |
 
 ## Important Notes
 
-- The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build. The POSTINIT script handles this automatically if a compatible build exists.
+- The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build. The POSTINIT script handles reinstallation automatically, but a new build is needed if the kernel changed.
 - The `hailort-drivers` repo uses the **`hailo8` branch** for Hailo-8 support. The `master` branch only supports Hailo-10/15.
 - Secure Boot: The unsigned kernel module may require disabling Secure Boot.
+- If firmware download fails during installation, the script aborts — the sysext will not be installed without firmware.
 
 ## Building Locally
 
 To trigger a build manually:
 
-1. Go to **Actions** → **Build Hailo Sysext** → **Run workflow**
+1. Go to **Actions** > **Build Hailo Sysext** > **Run workflow**
 2. Set the TrueNAS version, HailoRT version, and train name
 3. The workflow produces `hailo.raw` as both an artifact and a GitHub release
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for detailed build pipeline documentation.
+See [docs/architecture.md](docs/architecture.md) for detailed build pipeline documentation, including the nested ISO squashfs extraction, kernel version detection, read-only filesystem constraints, and comparison with the NVIDIA sysext approach.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+The Hailo-8 firmware downloaded during installation is proprietary and subject to Hailo's EULA.
 
 ## Credits
 
