@@ -48,6 +48,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
+            gcc-12 \
             cmake \
             libelf-dev \
             squashfs-tools \
@@ -276,7 +277,8 @@ jobs:
           KERNEL_DIR="/tmp/kernel-headers/linux-headers-${KVER}"
 
           echo "Building hailo_pci.ko against kernel ${KVER}..."
-          make KERNEL_DIR="$KERNEL_DIR" all
+          # Use GCC 12 to match the kernel's compiler (GCC 11 lacks -ftrivial-auto-var-init=zero)
+          make CC=gcc-12 KERNEL_DIR="$KERNEL_DIR" all
 
           echo "=== Module info ==="
           modinfo hailo_pci.ko
