@@ -44,7 +44,7 @@ This sysext builds the `hailo_pci` kernel module from the **`hailo8` branch** of
 ### Prerequisites
 
 - TrueNAS SCALE 25.10 or newer (the current target train and version are recorded in [`.github/tracked-versions.json`](.github/tracked-versions.json) and tracked automatically)
-- Hailo-8 PCIe AI accelerator installed and visible (`lspci | grep Hailo`)
+- Hailo-8 PCIe AI accelerator installed and visible (`lspci -nnk -d 1e60:`, Hailo vendor ID `1e60`)
 - Root/sudo access
 - Internet access (to download the release and firmware)
 
