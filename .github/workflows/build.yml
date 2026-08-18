@@ -208,7 +208,8 @@ jobs:
           # When an iso_url override is supplied, the standard
           # download.truenas.com/TrueNAS-SCALE-<train>/<ver>/ layout does not
           # apply (TrueNAS 26 beta lives on iso.sys.truenas.net with no
-          # GITMANIFEST). Use the override verbatim.
+          # GITMANIFEST). Use the override verbatim; the beta ISO still ships a
+          # sibling .iso.sha256 so the checksum verification below is unchanged.
           if [ -n "$ISO_URL_OVERRIDE" ]; then
             ISO_URL="$ISO_URL_OVERRIDE"
           else
@@ -216,6 +217,7 @@ jobs:
             VERSION="${{ needs.resolve.outputs.truenas_version }}"
             ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
           fi
+          SHA_URL="${ISO_URL}.sha256"
           echo "Downloading: ${ISO_URL}"
           curl -fSL "$ISO_URL" -o /tmp/truenas.iso
           ls -lh /tmp/truenas.iso
