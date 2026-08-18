@@ -33,6 +33,11 @@ concurrency:
 
 jobs:
   update:
+    # workflow_run fires on every completion; a failed or cancelled build
+    # changed no releases, so skip the scrape and regen for those.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       # Mint a short-lived token from the CI app (in the default-branch ruleset
