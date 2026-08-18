@@ -239,9 +239,14 @@ jobs:
               print(sorted(vers, key=key)[-1])
           PY
 
-          # Hrefs look like ./26.0.0-BETA.2/?wrap=1 — extract version dirs.
+          # Hrefs look like ./26.0.0-BETA.2/?wrap=1 -- extract version dirs.
+          # Match the whole ./VERSION/ href segment so a suffix of a longer
+          # version (26.0.0.1-BETA.1) cannot be extracted on its own, and
+          # allow up to 4 numeric components, the same shape
+          # validate-tracked-versions.sh accepts.
           LATEST_PREVIEW=$(printf '%s' "$LISTING" \
-            | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?-(BETA|RC)\.[0-9]+' \
+            | grep -oE '\./[0-9]+(\.[0-9]+){1,3}-(BETA|RC)\.[0-9]+/' \
+            | sed -E 's|^\./([^/]+)/$|\1|' \
             | sort -u \
             | python3 -c "$PREVIEW_SORT_PY")
 
@@ -500,7 +505,8 @@ jobs:
           if [ "$HAILO_CHANGED" = "true" ]; then
             PARTS+=("HailoRT ${NEW_HAILO_DRIVER}")
           fi
-          MSG="Update tracked versions: $(IFS=', '; echo "${PARTS[*]}")"
+          JOINED=$(printf '%s, ' "${PARTS[@]}")
+          MSG="Update tracked versions: ${JOINED%, }"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
