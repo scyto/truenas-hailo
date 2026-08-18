@@ -116,50 +116,44 @@ def version_range(versions):
     return vs[0] if len(vs) == 1 else f"{vs[0]} - {vs[-1]}"
 
 
+def newest_per_kernel(releases_by_version, want_prerelease):
+    """Newest kernel-advertising release per kernel on the stable channel,
+    keyed by promotion state. Preview (BETA/RC) builds never count: they are
+    a separate channel and must never fill a stable kernel slot."""
+    newest = {}
+    for rels in releases_by_version.values():
+        for r in rels:
+            if (r["prerelease"] != want_prerelease or not r["kver"]
+                    or is_preview_version(r["version"])):
+                continue
+            cur = newest.get(r["kver"])
+            if cur is None or r["published"] > cur["published"]:
+                newest[r["kver"]] = r
+    return newest
+
+
 def kernel_winners(releases_by_version):
     """The release install.sh serves per advertised kernel: the newest
     promoted (non-prerelease) release whose body records that kernel,
     whichever TrueNAS version produced it. The table must name this release
     on a kernel row, not the row versions' own newest build, or the table
-    and the installer disagree the moment a sibling rebuild lands.
-    Preview (BETA/RC) builds never win: install.sh's stable channel refuses
-    them even if one is mispublished with prerelease=false."""
-    winners = {}
-    for rels in releases_by_version.values():
-        for r in rels:
-            if (r["prerelease"] or not r["kver"]
-                    or is_preview_version(r["version"])):
-                continue
-            cur = winners.get(r["kver"])
-            if cur is None or r["published"] > cur["published"]:
-                winners[r["kver"]] = r
-    return winners
+    and the installer disagree the moment a sibling rebuild lands."""
+    return newest_per_kernel(releases_by_version, want_prerelease=False)
 
 
 def pending_builds(releases_by_version):
     """The newest unpromoted stable build per kernel: a prerelease from a
     non-BETA/RC version, still gated behind hardware-test promotion. The
     installer's error message tells the user such a build exists and installs
-    once promoted; the table must say the same instead of "not built yet".
-    Preview (BETA/RC) builds never count: they are a separate channel, not a
-    stable build awaiting promotion."""
-    pending = {}
-    for rels in releases_by_version.values():
-        for r in rels:
-            if (not r["prerelease"] or not r["kver"]
-                    or is_preview_version(r["version"])):
-                continue
-            cur = pending.get(r["kver"])
-            if cur is None or r["published"] > cur["published"]:
-                pending[r["kver"]] = r
-    return pending
+    once promoted; the table must say the same instead of "not built yet"."""
+    return newest_per_kernel(releases_by_version, want_prerelease=True)
 
 
 def build_rows(stable, preview, kernel_map, winners, pending=None):
-    pending = pending or {}
     """One row per known stable kernel (built or not), then stable releases
     the kernel match cannot serve (single-version rows), then preview
     releases."""
+    pending = pending or {}
     by_kernel = {}
     mapped_versions = set()
     for train_versions in (kernel_map.get("trains") or {}).values():
