@@ -502,14 +502,18 @@ prefix = f'v{version}-'
 # promoted to Latest), so a preview box must accept prereleases for its exact
 # version. A stable box still excludes prereleases: an unverified stable build
 # stays a prerelease until a human closes its hardware-test issue (promoting it
-# to Latest), and auto-installing one would bypass that gate. The prefix is the
-# full version string, so a stable box can never match a BETA/RC release.
+# to Latest), and auto-installing one would bypass that gate.
 vu = version.upper()
 is_preview = ('-BETA' in vu) or ('-RC' in vu)
+def preview_tagged(release):
+    tu = release.get('tag_name', '').upper()
+    return ('-BETA' in tu) or ('-RC' in tu)
+# Refuse BETA/RC tags on stable boxes outright: prefix 'v26.0.0-' still matches
+# a 'v26.0.0-BETA.2-...' tag, so the prerelease flag alone gates a mispublished beta.
 matches = [r for r in data
            if r.get('tag_name', '').startswith(prefix)
            and not r.get('draft')
-           and (is_preview or not r.get('prerelease'))]
+           and (is_preview or (not r.get('prerelease') and not preview_tagged(r)))]
 if not matches:
     channel = 'preview (beta)' if is_preview else 'stable'
     print(f'No {channel} release found for TrueNAS version {version}', file=sys.stderr)
