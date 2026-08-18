@@ -515,7 +515,17 @@ jobs:
           # and can oops during inference. Refuse to ship a module where the
           # find_vma(current->mm,...) call is not immediately preceded by
           # mmap_read_lock(current->mm).
+          # The gate must also fail when the pattern matches NOTHING: a
+          # driver bump that renames the variable or splits the assignment
+          # would otherwise pass vacuously and ship the unlocked driver this
+          # check exists to block.
           MEMC=/tmp/hailort-drivers/linux/vdma/memory.c
+          MATCHES=$(grep -c 'vma = find_vma(current->mm' "$MEMC" || true)
+          if [ "$MATCHES" -eq 0 ]; then
+            echo "::error title=find_vma-lock::no 'vma = find_vma(current->mm' call site found in ${MEMC}; the lock gate cannot verify this driver version. Update the pattern (and the patch) for the new driver source."
+            grep -n 'find_vma' "$MEMC" || true
+            exit 1
+          fi
           if ! awk '
             /vma = find_vma\(current->mm/ { if (prev !~ /mmap_read_lock\(current->mm\)/) bad=1 }
             { prev=$0 }
@@ -525,7 +535,7 @@ jobs:
             grep -n -B2 -A1 'vma = find_vma(current->mm' "$MEMC" || true
             exit 1
           fi
-          echo "OK: find_vma(current->mm,...) is guarded by mmap_read_lock"
+          echo "OK: ${MATCHES} find_vma(current->mm,...) call site(s) guarded by mmap_read_lock"
 
       - name: Install kernel-matching GCC
         run: |
