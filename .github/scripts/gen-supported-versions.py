@@ -41,6 +41,10 @@ DRV_RE = re.compile(r"\|\s*(Gasket driver|HailoRT driver|MemryX SDK)\s*\|\s*`([^
 # version out of the tag (vX-<drivertoken>...). The version itself may contain
 # dashes (26.0.0-BETA.2), so stop at the first known driver token.
 TAG_VER_RE = re.compile(r"^v(.+?)-(?:gasket|hailo|hailort|memryx)", re.IGNORECASE)
+# Kernel-keyed tags encode the short kernel (k6.12.91-gasket1.0-18.4-r3):
+# the only kernel signal left when a body lost its rows.
+KTAG_KVER_RE = re.compile(r"^k(\d+(?:\.\d+)*)-(?:gasket|hailo|hailort|memryx)",
+                          re.IGNORECASE)
 
 
 def truenas_sort_key(version):
@@ -74,15 +78,29 @@ def parse_releases(data):
             version, train = hdr.group(1).strip(), hdr.group(2).strip()
         else:
             tm = TAG_VER_RE.match(tag)
-            if not tm:
-                continue  # cannot identify the TrueNAS version; skip it
-            version, train = tm.group(1), ""
+            if tm:
+                version, train = tm.group(1), ""
+            elif KTAG_KVER_RE.match(tag):
+                # No TrueNAS version to key on, but the tag names the kernel;
+                # resolve_ktag_kernels() fills kver in from it.
+                version, train = "", ""
+            else:
+                # A release the table cannot identify (edited body, free-form
+                # manual publish) still gets served by install.sh's kernel
+                # match, so a silent skip makes the table lie. Warn loudly in
+                # the workflow log instead.
+                print(f"WARNING: cannot identify a TrueNAS version for "
+                      f"release {tag}; it will not appear in the table",
+                      file=sys.stderr)
+                continue
         ker = KER_RE.search(body)
         drv = DRV_RE.search(body)
+        km = KTAG_KVER_RE.match(tag)
         releases_by_version.setdefault(version, []).append({
             "version": version,
             "train": train,
             "kver": ker.group(1) if ker else "",
+            "kshort": km.group(1) if km else "",
             # "Gasket driver" -> "Gasket 1.0-18.4"; "MemryX SDK" -> "MemryX SDK 2.1"
             "driver": f"{drv.group(1).replace(' driver', '')} {drv.group(2)}" if drv else "",
             "prerelease": bool(r.get("prerelease")),
@@ -93,6 +111,29 @@ def parse_releases(data):
     return releases_by_version
 
 
+def resolve_ktag_kernels(releases_by_version, kernel_map):
+    """Recover the full kernel string for k-tagged releases whose body lost
+    the Target kernel row, via the kernel map, so they fill their kernel row
+    instead of showing "not built yet" while install.sh serves them. Only
+    promoted releases resolve: an unpromoted lost-body k-tag cannot be told
+    apart from a preview build (check-kernel-coverage.py, same rule)."""
+    full_by_short = {}
+    for train_versions in (kernel_map.get("trains") or {}).values():
+        for kver in train_versions.values():
+            full_by_short[kver.split("-")[0]] = kver
+    for rels in releases_by_version.values():
+        for r in rels:
+            if r["kver"] or not r["kshort"] or r["prerelease"]:
+                continue
+            full = full_by_short.get(r["kshort"], "")
+            if full:
+                r["kver"] = full
+            elif not r["version"]:
+                print(f"WARNING: release {r['tag']} has no Target kernel row "
+                      f"and its tag kernel {r['kshort']} is not in the kernel "
+                      "map; it will not appear in the table", file=sys.stderr)
+
+
 def served_releases(releases_by_version):
     """The one release install.sh serves per version:
       * Preview (BETA/RC) versions -> newest release (prereleases allowed).
@@ -101,6 +142,8 @@ def served_releases(releases_by_version):
         gated behind hardware-test promotion), so it is omitted until then."""
     stable, preview = {}, {}
     for version, rels in releases_by_version.items():
+        if not version:
+            continue  # lost-body k-tags only feed kernel_winners
         rels.sort(key=lambda x: x["published"], reverse=True)
         if is_preview_version(version):
             preview[version] = rels[0]
@@ -257,6 +300,7 @@ def main():
               file=sys.stderr)
 
     parsed = parse_releases(data)
+    resolve_ktag_kernels(parsed, kernel_map)
     stable, preview = served_releases(parsed)
     rows = build_rows(stable, preview, kernel_map, kernel_winners(parsed),
                       pending_builds(parsed))
