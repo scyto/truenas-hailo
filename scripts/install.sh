@@ -464,7 +464,8 @@ if [ -n "$LOCAL_RAW" ]; then
     echo "Using local hailo.raw: $LOCAL_RAW"
     cp "$LOCAL_RAW" "${WORK_DIR}/hailo.raw"
 else
-    # Detect TrueNAS version
+    # Detect TrueNAS version: the version string decides the release channel
+    # (stable vs preview). It is never inferred from the kernel number.
     VERSION=$(midclt call system.info | python3 -c "
 import sys, json
 try:
@@ -474,58 +475,153 @@ except Exception as e:
     sys.exit(1)
 ") || { echo "ERROR: Failed to detect TrueNAS version"; exit 1; }
     [ -z "$VERSION" ] && { echo "ERROR: TrueNAS version is empty"; exit 1; }
-    echo "Detected TrueNAS version: ${VERSION}"
 
-    # Find matching release
-    echo "Searching for matching release..."
-    export VERSION
-    RELEASE_TAG=$(curl -sS --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100" \
-        | python3 -c "
-import sys, json, os
+    # The running kernel is the match key: kernel modules bind to the exact
+    # kernel string, and many TrueNAS versions share one kernel, so the right
+    # release is the one built for this kernel, whichever TrueNAS version
+    # produced it.
+    KVER=$(uname -r)
+    [ -z "$KVER" ] && { echo "ERROR: could not read the running kernel (uname -r)"; exit 1; }
+    echo "Detected TrueNAS version: ${VERSION} (kernel: ${KVER})"
+
+    # Find the release built for this kernel
+    echo "Searching for a release matching this kernel..."
+    export VERSION KVER
+    # Fetch every releases page. The legacy releases the version fallback needs
+    # are the oldest, exactly the ones a single newest-first page drops once
+    # the repo outgrows it. Each page's JSON array is appended as-is; the
+    # selection snippet merges them and reports API error objects.
+    RELEASES_JSON="${WORK_DIR}/releases.json"
+    : > "$RELEASES_JSON"
+    PAGE=1
+    while :; do
+        PAGE_JSON=$(curl -sS --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100&page=${PAGE}") \
+            || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
+        printf '%s\n' "$PAGE_JSON" >> "$RELEASES_JSON"
+        # Only a full page can have more behind it; anything else (short page,
+        # API error object) ends the loop.
+        PAGE_LEN=$(printf '%s' "$PAGE_JSON" | python3 -c "
+import sys, json
 try:
-    data = json.load(sys.stdin)
-except (json.JSONDecodeError, ValueError):
+    doc = json.load(sys.stdin)
+except Exception:
+    print(0)
+else:
+    print(len(doc) if isinstance(doc, list) else 0)
+")
+        [ "$PAGE_LEN" -eq 100 ] || break
+        PAGE=$((PAGE + 1))
+    done
+    RELEASE_TAG=$(python3 -c "
+# BEGIN release-selection (extracted verbatim by tests/test_release_selection.py;
+# single-quoted strings only, \x60 stands for backtick, no dollar signs: this
+# code lives inside a double-quoted bash string)
+import sys, json, os, re
+# stdin carries one JSON array per fetched API page, concatenated.
+decoder = json.JSONDecoder()
+text = sys.stdin.read()
+data = []
+pos = 0
+while pos < len(text):
+    if text[pos].isspace():
+        pos += 1
+        continue
+    try:
+        doc, pos = decoder.raw_decode(text, pos)
+    except ValueError:
+        print('Failed to parse GitHub API response', file=sys.stderr)
+        sys.exit(1)
+    if isinstance(doc, dict) and 'message' in doc:
+        msg = doc['message']
+        if 'rate limit' in msg.lower():
+            print('GitHub API rate limit exceeded (60 requests/hour for unauthenticated calls).', file=sys.stderr)
+            print('Wait a few minutes and try again.', file=sys.stderr)
+        else:
+            print(f'GitHub API error: {msg}', file=sys.stderr)
+        sys.exit(1)
+    elif isinstance(doc, list):
+        data.extend(doc)
+    else:
+        print('Failed to parse GitHub API response', file=sys.stderr)
+        sys.exit(1)
+if not text.strip():
     print('Failed to parse GitHub API response', file=sys.stderr)
     sys.exit(1)
-if isinstance(data, dict) and 'message' in data:
-    msg = data['message']
-    if 'rate limit' in msg.lower():
-        print('GitHub API rate limit exceeded (60 requests/hour for unauthenticated calls).', file=sys.stderr)
-        print('Wait a few minutes and try again.', file=sys.stderr)
-    else:
-        print(f'GitHub API error: {msg}', file=sys.stderr)
-    sys.exit(1)
 version = os.environ['VERSION']
-prefix = f'v{version}-'
-# A running BETA/RC version (e.g. 26.0.0-BETA.2) is the TrueNAS preview channel;
-# its matching sysext is published as a prerelease (preview builds are never
-# promoted to Latest), so a preview box must accept prereleases for its exact
-# version. A stable box still excludes prereleases: an unverified stable build
-# stays a prerelease until a human closes its hardware-test issue (promoting it
-# to Latest), and auto-installing one would bypass that gate.
+kver = os.environ['KVER']
+# Channel gate: a BETA/RC box is on the preview channel and may install
+# prereleases (preview builds are never promoted). A stable box only installs
+# promoted (non-prerelease) builds: an unverified stable build stays a
+# prerelease until a human closes its hardware-test issue, and auto-installing
+# one would bypass that gate.
 vu = version.upper()
 is_preview = ('-BETA' in vu) or ('-RC' in vu)
+ker_re = re.compile(r'Target kernel\s*\|\s*\x60([^\x60]+)\x60')
+def target_kernel(release):
+    m = ker_re.search(release.get('body') or '')
+    return m.group(1) if m else ''
+# Train guard (hailo divergence from coral): the sysext also ships userspace
+# (libhailort, hailortcli) built against a train's base system, so a kernel
+# match is only served from the box's own TrueNAS train. The train key is the
+# first two numeric version components; a release with no parseable notes
+# header passes (legacy releases are handled by the version fallback).
+hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
+def train_key(v):
+    return '.'.join(v.partition('-')[0].split('.')[:2])
+def same_train(release):
+    m = hdr_re.search(release.get('body') or '')
+    if not m:
+        return True
+    return train_key(m.group(1)) == train_key(version)
 def preview_tagged(release):
     tu = release.get('tag_name', '').upper()
     return ('-BETA' in tu) or ('-RC' in tu)
-# Refuse BETA/RC tags on stable boxes outright: prefix 'v26.0.0-' still matches
-# a 'v26.0.0-BETA.2-...' tag, so the prerelease flag alone gates a mispublished beta.
-matches = [r for r in data
-           if r.get('tag_name', '').startswith(prefix)
-           and not r.get('draft')
-           and (is_preview or (not r.get('prerelease') and not preview_tagged(r)))]
+# A stable box also refuses BETA/RC-tagged releases outright. The old
+# version-prefix match made installing one structurally impossible; with
+# kernel matching, the prerelease flag alone would be one mispublished
+# release away from serving a beta build to stable boxes.
+candidates = [r for r in data
+              if not r.get('draft')
+              and (is_preview or (not r.get('prerelease') and not preview_tagged(r)))]
+matches = [r for r in candidates if target_kernel(r) == kver and same_train(r)]
+cross = [r for r in candidates if target_kernel(r) == kver and not same_train(r)]
+for r in cross:
+    print('WARNING: ' + r.get('tag_name', '?') + ' matches kernel ' + kver
+          + ' but was built for a different TrueNAS train; not using it'
+          + ' (hailo userspace must match the train).', file=sys.stderr)
+if not matches:
+    # Releases published before the Target kernel row existed can only be
+    # matched the old way: exact TrueNAS version. Never fall back onto a
+    # release that DOES advertise a kernel: a version match with the wrong
+    # kernel would ship modules that cannot load.
+    prefix = f'v{version}-'
+    matches = [r for r in candidates
+               if r.get('tag_name', '').startswith(prefix) and not target_kernel(r)]
+    if matches:
+        print(f'NOTE: no release advertises kernel {kver}; matched by TrueNAS version instead.', file=sys.stderr)
 if not matches:
     channel = 'preview (beta)' if is_preview else 'stable'
-    print(f'No {channel} release found for TrueNAS version {version}', file=sys.stderr)
-    print('A matching sysext may not be built yet (the daily check builds within ~24h of an', file=sys.stderr)
+    print(f'No {channel} release found for kernel {kver} (TrueNAS {version}).', file=sys.stderr)
+    # not preview_tagged: previews never promote, so the hint would be false
+    pending = [r for r in data
+               if not r.get('draft') and r.get('prerelease')
+               and not preview_tagged(r)
+               and target_kernel(r) == kver]
+    if pending and not is_preview:
+        print('A build for this kernel exists but is a prerelease awaiting hardware-test', file=sys.stderr)
+        print('promotion; it installs automatically once promoted.', file=sys.stderr)
+    print('Otherwise a build may not exist yet (the daily check builds within ~24h of an', file=sys.stderr)
     print('ISO going live), or you can build one yourself from the repo. Available releases:', file=sys.stderr)
-    tags = [r.get('tag_name', '?') for r in data]
-    for t in tags:
-        print(f'  {t}', file=sys.stderr)
+    for r in [x for x in data if not x.get('draft')]:
+        t = r.get('tag_name', '?')
+        k = target_kernel(r) or 'no kernel recorded'
+        mark = ' (prerelease)' if r.get('prerelease') else ''
+        print(f'  {t} ({k}){mark}', file=sys.stderr)
     sys.exit(1)
 matches.sort(key=lambda r: r.get('published_at') or r.get('created_at') or '', reverse=True)
 print(matches[0]['tag_name'], end='')
-") || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
+# END release-selection
+" < "$RELEASES_JSON") || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
 
     echo "Found release: ${RELEASE_TAG}"
 
@@ -678,6 +774,33 @@ else
     echo "  Install squashfs-tools: apt-get install squashfs-tools"
     exit 1
 fi
+
+# --- Verify the image was built for the running kernel ---
+# The selected release should already match uname -r, but the legacy version
+# fallback and a hand-supplied hailo.raw can still deliver modules built for a
+# different kernel, which can never load. Refuse before touching the system:
+# without this check the install "succeeds", registers persistence, and the
+# user reboots into a sysext whose modules never come up.
+echo ""
+echo "=== Verifying image kernel ==="
+RUNNING_KVER=$(uname -r)
+# || true: unsquashfs exits nonzero on an unmatched pattern, and pipefail
+# would kill the script before the no-module-directory diagnostic prints.
+IMAGE_MODULE_DIRS=$(unsquashfs -l "${WORK_DIR}/hailo.raw" 'usr/lib/modules/*' 2>/dev/null \
+    | sed -n 's|^squashfs-root/usr/lib/modules/\([^/]*\)/.*|\1|p' | sort -u) || true
+if ! printf '%s\n' "$IMAGE_MODULE_DIRS" | grep -qxF "$RUNNING_KVER"; then
+    echo "ERROR: this hailo.raw was not built for the running kernel (${RUNNING_KVER})." >&2
+    if [ -n "$IMAGE_MODULE_DIRS" ]; then
+        echo "  Kernels in the image:" >&2
+        printf '%s\n' "$IMAGE_MODULE_DIRS" | sed 's/^/    /' >&2
+    else
+        echo "  The image contains no kernel module directory at all." >&2
+    fi
+    echo "  Its modules could never load. Get the build for this kernel from:" >&2
+    echo "  https://github.com/${REPO}/releases" >&2
+    exit 1
+fi
+echo "Image kernel matches running kernel (${RUNNING_KVER})"
 
 echo ""
 echo "=== Installing hailo.raw ==="

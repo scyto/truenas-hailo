@@ -3,22 +3,12 @@ import importlib.util
 import unittest
 from pathlib import Path
 
+from release_fixtures import release
+
 SCRIPT = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "gen-supported-versions.py"
 spec = importlib.util.spec_from_file_location("gen_supported_versions", SCRIPT)
 gsv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gsv)
-
-
-def release(tag, version, train, kver, prerelease=False,
-            published="2026-01-01T00:00:00Z"):
-    body = (f"## Hailo-8 Sysext for TrueNAS SCALE {version} ({train})\n"
-            "| Field | Value |\n| --- | --- |\n"
-            "| HailoRT driver | `4.21.0` |\n")
-    if kver:
-        body += f"| Target kernel | `{kver}` |\n"
-    return {"tag_name": tag, "body": body, "prerelease": prerelease,
-            "draft": False, "html_url": f"https://example.test/{tag}",
-            "published_at": published}
 
 
 KERNEL_MAP = {"trains": {"Goldeye": {
