@@ -37,6 +37,38 @@ A single daily GitHub Actions workflow (`check-releases.yml`, 06:00 UTC) monitor
 
 If anything moved, the workflow writes the file in one commit and dispatches builds. A **HailoRT bump builds both** the stable (25.x) and preview (26-beta) targets, so each driver release ships both; a TrueNAS-only bump on one channel builds just that channel. All auto-builds publish without the "Latest" badge. Stable builds: verify on Hailo-8 hardware, then close the `hardware-test` issue to promote to Latest. **Preview (26-beta) builds stay pre-releases permanently and are never promoted to Latest** (they carry the `preview-hardware-test` label, which `promote.yml` ignores) so stable installs are unaffected; install them explicitly by tag.
 
+## Kernel-keyed builds
+
+A sysext's kernel modules bind to the exact kernel string (vermagic must
+equal `uname -r`), and TrueNAS point releases usually reuse the previous
+release's kernel. The pipeline is keyed accordingly:
+
+- check-releases.yml resolves a new stable version's kernel from its
+  rootfs.mtree manifest. If a promoted release for that kernel (with the
+  current driver) already exists, no build is dispatched;
+  tracked-versions.json still updates and the installer serves the new
+  version by kernel match. If the only coverage is an unpromoted build
+  awaiting hardware test, no duplicate build is dispatched either, but the
+  tracked version holds until that build is promoted (so the kernel keeps a
+  rebuild path if the build is deleted). Preview (BETA/RC) builds never
+  count as coverage.
+- A new kernel, a driver bump, or an unresolvable kernel always builds.
+- install.sh selects releases by matching `uname -r` against the release's
+  `Target kernel` row, falling back to the short kernel encoded in a k-tag
+  when a body lost its row (the same rule check-releases' coverage gate
+  uses), then verifies the downloaded image's own `usr/lib/modules/<kernel>`
+  directory before installing. Kernel matching is additionally scoped to the
+  box's TrueNAS train, because the sysext also ships userspace (libhailort,
+  hailortcli) built against that train's base system. The `hailo.kver`
+  asset carries the same kernel string in machine-readable form for
+  external tooling; install.sh does not read it (the notes row is the one
+  key every release has, since older immutable releases predate the asset).
+- New releases are tagged `k<kernel>-hailo<driver>-r<run>` (short kernel,
+  e.g. `k6.12.91`). Releases published before the migration keep their
+  `v<version>` tags; both install the same way.
+- Hardware-test promotion is per build, which now means per kernel: one
+  verification covers every TrueNAS version sharing that kernel.
+
 ## Custom Builds
 
 If you need a build for a TrueNAS version or HailoRT version that doesn't have a pre-built release, you can build your own using GitHub Actions - no local build environment needed.
