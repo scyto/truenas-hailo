@@ -199,6 +199,61 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # ─────────────────────────────────────────────────────────────────────
+      # Kernel coverage gate: the sysext binds to the kernel, not the TrueNAS
+      # version string, and point releases usually reuse the previous kernel.
+      # Resolve the new version's kernel from its rootfs.mtree manifest (small
+      # text fetch, no ISO); if a release for (kernel, current driver) already
+      # exists, no build is needed; only a PROMOTED one lets the tracked
+      # version advance (see check-kernel-coverage.py). An unresolvable
+      # kernel falls through to "build", the safe default.
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Resolve kernel and check coverage
+        id: kernel
+        if: steps.truenas.outputs.changed == 'true'
+        env:
+          NEW_VERSION: ${{ steps.truenas.outputs.version }}
+          NEW_TRAIN: ${{ steps.truenas.outputs.train }}
+          CURRENT_DRIVER: ${{ steps.tracked.outputs.hailo_driver }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          MTREE_URL="https://download.truenas.com/TrueNAS-SCALE-${NEW_TRAIN}/${NEW_VERSION}/rootfs.mtree"
+          NEW_KERNEL=$(curl -fsSL "$MTREE_URL" 2>/dev/null \
+            | grep -oE 'usr/lib/modules/[0-9][^/ ]*production[^/ ]*' \
+            | head -1 | sed 's#usr/lib/modules/##') || true
+
+          if [ -z "$NEW_KERNEL" ]; then
+            echo "Kernel for ${NEW_VERSION} not resolvable (no rootfs.mtree yet); building."
+            echo "covered=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Kernel for ${NEW_VERSION}: ${NEW_KERNEL}"
+          export NEW_KERNEL
+
+          # A transient API or parse failure must not fail the daily check:
+          # the safe default is covered=false (build it).
+          COVERAGE=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | python3 .github/scripts/check-kernel-coverage.py) || COVERAGE=""
+
+          case "$COVERAGE" in
+            promoted\ *)
+              COVERING_TAG="${COVERAGE#promoted }"
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}, already covered by promoted release ${COVERING_TAG}; the installer serves this version by kernel match. Tracked versions still update."
+              echo "covered=true" >> "$GITHUB_OUTPUT"
+              ;;
+            pending\ *)
+              COVERING_TAG="${COVERAGE#pending }"
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}; unpromoted build ${COVERING_TAG} is awaiting hardware-test promotion. No duplicate build is dispatched, and the tracked version does not advance until that release is promoted."
+              echo "covered=true" >> "$GITHUB_OUTPUT"
+              echo "covered_pending=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "No release covers kernel ${NEW_KERNEL} with driver ${CURRENT_DRIVER}; will build."
+              echo "covered=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      # ─────────────────────────────────────────────────────────────────────
       # TrueNAS preview (beta) check: TrueNAS 26 betas are not published to
       # scale-build tags or download.truenas.com and ship no GITMANIFEST. They
       # live under a browsable channel (iso.sys.truenas.net/TrueNAS-26-BETA/).
@@ -423,7 +478,9 @@ jobs:
       # ─────────────────────────────────────────────────────────────────────
       - name: Resolve build runner
         id: runner
-        if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered != 'true') ||
+          steps.hailo.outputs.changed == 'true'
         run: |
           if [ "${{ steps.truenas.outputs.changed }}" = "true" ]; then
             TRAIN="${{ steps.truenas.outputs.train }}"
@@ -441,11 +498,16 @@ jobs:
       # workflow file changes are needed. Commit message reflects the
       # combination so `git log` is self-explanatory.
       # ─────────────────────────────────────────────────────────────────────
+      # covered_pending holds the stable version back (see the coverage step);
+      # the composite TRUENAS_CHANGED keeps write, message, and condition agreed.
       - name: Update tracked-versions
         id: write
-        if: steps.truenas.outputs.changed == 'true' || steps.preview.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true') ||
+          steps.preview.outputs.changed == 'true' ||
+          steps.hailo.outputs.changed == 'true'
         env:
-          TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed }}
+          TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true' }}
           NEW_TRUENAS_VERSION: ${{ steps.truenas.outputs.version }}
           NEW_TRAIN: ${{ steps.truenas.outputs.train }}
           PREVIEW_CHANGED: ${{ steps.preview.outputs.changed }}
@@ -562,7 +624,9 @@ jobs:
       # beta/RC tags).
       # ─────────────────────────────────────────────────────────────────────
       - name: Trigger stable build
-        if: steps.truenas.outputs.changed == 'true' || steps.hailo.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered != 'true') ||
+          steps.hailo.outputs.changed == 'true'
         uses: actions/github-script@v9
         with:
           github-token: ${{ steps.app-token.outputs.token }}
