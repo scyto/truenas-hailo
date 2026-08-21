@@ -29,7 +29,8 @@ import urllib.request
 ROOT = "https://download.truenas.com/"
 BASE = ROOT + "TrueNAS-SCALE-{train}/"
 MIN_VERSION = (25, 4)
-TRAIN_DIR_RE = re.compile(r'href="\.?/?TrueNAS-SCALE-([A-Za-z]+)/')
+# Trailing slash optional: the top-level index links some trains without one.
+TRAIN_DIR_RE = re.compile(r'href="\.?/?TrueNAS-SCALE-([A-Za-z]+)[/"]')
 VERSION_DIR_RE = re.compile(r'href="\.?/?(\d+(?:\.\d+){1,4})/')
 KVER_RE = re.compile(r"usr/lib/modules/([0-9][^/\s]*production[^/\s]*)")
 
@@ -80,6 +81,12 @@ def update_map(data, fetch=fetch):
     except Exception as e:
         print(f"WARNING: could not list trains ({e}); using cached trains",
               file=sys.stderr)
+        names = sorted(trains)
+    if not names:
+        # An empty listing (format change, maintenance page) must not freeze
+        # the map silently; fall back like the fetch-failure path.
+        print("WARNING: no trains found in the root listing; using cached "
+              "trains", file=sys.stderr)
         names = sorted(trains)
     for train in names:
         try:
