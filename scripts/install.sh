@@ -497,14 +497,31 @@ if isinstance(data, dict) and 'message' in data:
     sys.exit(1)
 version = os.environ['VERSION']
 prefix = f'v{version}-'
-matches = [r for r in data if r.get('tag_name', '').startswith(prefix)]
+# A running BETA/RC version (e.g. 26.0.0-BETA.2) is the TrueNAS preview channel;
+# its matching sysext is published as a prerelease (preview builds are never
+# promoted to Latest), so a preview box must accept prereleases for its exact
+# version. A stable box still excludes prereleases: an unverified stable build
+# stays a prerelease until a human closes its hardware-test issue (promoting it
+# to Latest), and auto-installing one would bypass that gate.
+vu = version.upper()
+is_preview = ('-BETA' in vu) or ('-RC' in vu)
+def preview_tagged(release):
+    tu = release.get('tag_name', '').upper()
+    return ('-BETA' in tu) or ('-RC' in tu)
+# Refuse BETA/RC tags on stable boxes outright: prefix 'v26.0.0-' still matches
+# a 'v26.0.0-BETA.2-...' tag, so the prerelease flag alone gates a mispublished beta.
+matches = [r for r in data
+           if r.get('tag_name', '').startswith(prefix)
+           and not r.get('draft')
+           and (is_preview or (not r.get('prerelease') and not preview_tagged(r)))]
 if not matches:
-    print(f'No release found for TrueNAS version {version}', file=sys.stderr)
+    channel = 'preview (beta)' if is_preview else 'stable'
+    print(f'No {channel} release found for TrueNAS version {version}', file=sys.stderr)
+    print('A matching sysext may not be built yet (the daily check builds within ~24h of an', file=sys.stderr)
+    print('ISO going live), or you can build one yourself from the repo. Available releases:', file=sys.stderr)
     tags = [r.get('tag_name', '?') for r in data]
-    if tags:
-        print('Available releases:', file=sys.stderr)
-        for t in tags:
-            print(f'  {t}', file=sys.stderr)
+    for t in tags:
+        print(f'  {t}', file=sys.stderr)
     sys.exit(1)
 matches.sort(key=lambda r: r.get('published_at') or r.get('created_at') or '', reverse=True)
 print(matches[0]['tag_name'], end='')
