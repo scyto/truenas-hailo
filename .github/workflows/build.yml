@@ -814,6 +814,15 @@ jobs:
           sha256sum hailo.raw > hailo.raw.sha256
           cat hailo.raw.sha256
 
+      - name: Write kernel version asset
+        run: |
+          # hailo.kver ships with the release so tooling can key on the exact
+          # kernel without parsing the release notes. install.sh still parses
+          # the notes: they are the only key that exists on releases published
+          # before this asset (releases are immutable, no backfilling).
+          printf '%s\n' "${REAL_KVER}" > hailo.kver
+          cat hailo.kver
+
       - name: Compute firmware sha256
         # Each release self-describes the firmware sha it was built against.
         # install.sh fetches this asset from the same release as hailo.raw,
@@ -913,6 +922,7 @@ jobs:
           path: |
             hailo.raw
             hailo.raw.sha256
+            hailo.kver
             firmware.sha256
             release-notes.md
 
@@ -946,6 +956,7 @@ jobs:
           files: |
             hailo.raw
             hailo.raw.sha256
+            hailo.kver
             firmware.sha256
             scripts/hailo-lib.sh
             scripts/install.sh
