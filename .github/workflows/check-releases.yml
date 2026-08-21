@@ -232,7 +232,9 @@ jobs:
               bp = [int(x) for x in base.split('.')]
               bp += [0] * (3 - len(bp))
               typ, _, num = pre.partition('.')
-              rank = {'BETA': 0, 'RC': 1}.get(typ.upper(), -1)
+              # Same ranking as gen-supported-versions.py's truenas_sort_key:
+              # a final release sorts above its BETA/RC.
+              rank = 3 if not pre else {'BETA': 0, 'RC': 1}.get(typ.upper(), 2)
               return (bp, rank, int(num) if num.isdigit() else 0)
           vers = [l.strip() for l in sys.stdin if l.strip()]
           if vers:
@@ -244,11 +246,13 @@ jobs:
           # version (26.0.0.1-BETA.1) cannot be extracted on its own, and
           # allow up to 4 numeric components, the same shape
           # validate-tracked-versions.sh accepts.
+          # || true: zero matches exits grep 1, and pipefail + errexit would
+          # otherwise kill the whole job here (empty channel after a GA).
           LATEST_PREVIEW=$(printf '%s' "$LISTING" \
             | grep -oE '\./[0-9]+(\.[0-9]+){1,3}-(BETA|RC)\.[0-9]+/' \
             | sed -E 's|^\./([^/]+)/$|\1|' \
             | sort -u \
-            | python3 -c "$PREVIEW_SORT_PY")
+            | python3 -c "$PREVIEW_SORT_PY") || true
 
           if [ -z "$LATEST_PREVIEW" ]; then
             echo "No beta/RC versions found in channel listing. Skipping preview check."
