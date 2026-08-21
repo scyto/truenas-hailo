@@ -1,5 +1,6 @@
 """Offline unit tests for .github/scripts/gen-supported-versions.py."""
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -172,6 +173,16 @@ class RenderTable(unittest.TestCase):
         self.assertEqual(gsv.version_range(["25.10.0"]), "25.10.0")
         self.assertEqual(gsv.version_range(["25.10.3.1", "25.10.0", "25.10.2"]),
                          "25.10.0 - 25.10.3.1")
+
+
+class ReadReleases(unittest.TestCase):
+    def test_concatenated_pages_are_merged(self):
+        text = json.dumps([{"a": 1}]) + "\n" + json.dumps([{"b": 2}]) + "\n"
+        self.assertEqual(gsv.read_releases(text), [{"a": 1}, {"b": 2}])
+
+    def test_api_error_object_aborts(self):
+        with self.assertRaises(SystemExit):
+            gsv.read_releases(json.dumps({"message": "rate limited"}))
 
 
 if __name__ == "__main__":

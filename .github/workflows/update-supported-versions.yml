@@ -65,9 +65,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
-          # per_page=100 is well above the current release count; the generator
-          # warns if it ever hits the cap (then add pagination).
-          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+          # --paginate: install.sh paginates too, and the table must cover
+          # every release the installer can serve.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
             | python3 .github/scripts/gen-supported-versions.py README.md .github/kernel-map.json
 
       - name: Commit if changed

@@ -229,6 +229,25 @@ def render_table(rows):
     return lines
 
 
+def read_releases(text):
+    """Parse `gh api --paginate` output: one JSON array per page,
+    concatenated. An API error object aborts."""
+    decoder = json.JSONDecoder()
+    data = []
+    pos = 0
+    while pos < len(text):
+        if text[pos].isspace():
+            pos += 1
+            continue
+        doc, pos = decoder.raw_decode(text, pos)
+        if isinstance(doc, dict):
+            print(f"ERROR: GitHub API returned: {doc.get('message', doc)!r}",
+                  file=sys.stderr)
+            sys.exit(1)
+        data.extend(doc)
+    return data
+
+
 def main():
     if len(sys.argv) not in (2, 3):
         print("usage: gen-supported-versions.py <README.md> [kernel-map.json]",
@@ -245,16 +264,7 @@ def main():
             print(f"WARNING: {sys.argv[2]} not found; table lists released "
                   "versions only", file=sys.stderr)
 
-    data = json.load(sys.stdin)
-    if isinstance(data, dict):  # an API error object, not a list
-        print(f"ERROR: GitHub API returned: {data.get('message', data)!r}",
-              file=sys.stderr)
-        sys.exit(1)
-    if len(data) >= 100:
-        # per_page=100 without pagination; surface possible truncation loudly
-        # rather than silently dropping older releases from the table.
-        print("WARNING: 100 releases returned; table may be truncated. Add pagination.",
-              file=sys.stderr)
+    data = read_releases(sys.stdin.read())
 
     parsed = parse_releases(data)
     stable, preview = served_releases(parsed)

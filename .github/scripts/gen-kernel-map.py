@@ -23,10 +23,13 @@ import re
 import sys
 import urllib.request
 
-# Trains in scope, 25.04 onward (org discussion #9). When a new stable train
-# starts (check-releases.yml logs a "train rollover" notice), add it here.
-TRAINS = ["Fangtooth", "Goldeye"]
-BASE = "https://download.truenas.com/TrueNAS-SCALE-{train}/"
+# Trains are discovered from the download.truenas.com root listing, so a
+# train rollover needs no edit here. Scope is 25.04 onward (org discussion
+# #9): older trains list no in-scope versions and are skipped.
+ROOT = "https://download.truenas.com/"
+BASE = ROOT + "TrueNAS-SCALE-{train}/"
+MIN_VERSION = (25, 4)
+TRAIN_DIR_RE = re.compile(r'href="\.?/?TrueNAS-SCALE-([A-Za-z]+)/')
 VERSION_DIR_RE = re.compile(r'href="\.?/?(\d+(?:\.\d+){1,4})/')
 KVER_RE = re.compile(r"usr/lib/modules/([0-9][^/\s]*production[^/\s]*)")
 
@@ -37,10 +40,21 @@ def fetch(url):
         return resp.read().decode("utf-8", errors="replace")
 
 
+def discover_trains(fetch=fetch):
+    """Train names listed on download.truenas.com, e.g. ['Fangtooth',
+    'Goldeye']."""
+    html = fetch(ROOT)
+    return sorted(set(TRAIN_DIR_RE.findall(html)))
+
+
+def in_scope(version):
+    return tuple(int(p) for p in version.split(".")[:2]) >= MIN_VERSION
+
+
 def list_versions(train, fetch=fetch):
-    """Version directories listed for a train, e.g. ['25.10.0', '25.10.1']."""
+    """In-scope version directories listed for a train, e.g. ['25.10.0']."""
     html = fetch(BASE.format(train=train))
-    return sorted(set(VERSION_DIR_RE.findall(html)))
+    return sorted(v for v in set(VERSION_DIR_RE.findall(html)) if in_scope(v))
 
 
 def resolve_kernel(train, version, fetch=fetch):
@@ -61,8 +75,13 @@ def update_map(data, fetch=fetch):
     """Add kernels for any versions not yet mapped. Mutates and returns data."""
     trains = data.setdefault("trains", {})
     unresolved = data.setdefault("unresolved", {})
-    for train in TRAINS:
-        known = trains.setdefault(train, {})
+    try:
+        names = discover_trains(fetch=fetch)
+    except Exception as e:
+        print(f"WARNING: could not list trains ({e}); using cached trains",
+              file=sys.stderr)
+        names = sorted(trains)
+    for train in names:
         try:
             versions = list_versions(train, fetch=fetch)
         except Exception as e:
@@ -70,6 +89,9 @@ def update_map(data, fetch=fetch):
             print(f"WARNING: could not list {train} versions ({e}); "
                   "keeping cached entries", file=sys.stderr)
             continue
+        if not versions and train not in trains:
+            continue  # pre-25.04 train, out of scope
+        known = trains.setdefault(train, {})
         missing = []
         for version in versions:
             if version in known:
