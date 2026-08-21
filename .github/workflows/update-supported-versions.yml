@@ -15,9 +15,11 @@ on:
   workflow_run:
     workflows: ["Build Hailo Sysext", "Promote release on hardware-test sign-off"]
     types: [completed]
-  # Human / UI release actions (e.g. deleting a release) fire these immediately.
+  # Human / UI release actions (e.g. deleting a release) fire these
+  # immediately. `published` fires for prereleases and full releases both,
+  # so `released`/`prereleased` would double-fire every publish.
   release:
-    types: [published, unpublished, edited, deleted, released, prereleased]
+    types: [published, unpublished, edited, deleted]
   schedule:
     - cron: '17 6 * * *'  # daily safety net, offset from check-releases (06:00 UTC)
   workflow_dispatch:
