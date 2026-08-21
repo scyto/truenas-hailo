@@ -154,6 +154,7 @@ jobs:
     timeout-minutes: 90
     outputs:
       run_number: ${{ steps.build_id.outputs.run_number }}
+      short_kver: ${{ steps.kver.outputs.short_kver }}
 
     steps:
       - name: Checkout repository
@@ -412,6 +413,7 @@ jobs:
           key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
 
       - name: Detect kernel version from cached headers
+        id: kver
         run: |
           # Same selector pattern as the extract step: prefer production,
           # fall back to non-debug, then fail loud rather than picking up
@@ -447,6 +449,10 @@ jobs:
           fi
           echo "Real kernel version: ${REAL_KVER}"
           echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
+          # Short form (6.12.91 from 6.12.91-production+truenas) keys the
+          # release tag; exposed as a step output so workflow expressions can
+          # reference it, mirroring the build_id pattern.
+          echo "short_kver=${REAL_KVER%%-*}" >> "$GITHUB_OUTPUT"
 
           # Detect the GCC major version the kernel was compiled with, instead of
           # hardcoding one. Newer TrueNAS kernels move forward: 6.6/6.12 were
@@ -861,6 +867,7 @@ jobs:
           BUILD_SHA: ${{ github.sha }}
           RUN_NUMBER: ${{ steps.build_id.outputs.run_number }}
           REPO: ${{ github.repository }}
+          SHORT_KVER: ${{ steps.kver.outputs.short_kver }}
         run: |
           # The body is regenerated on every dispatch — no template file checked
           # in. REAL_KVER comes from the kernel-detection step (exported via
@@ -868,7 +875,7 @@ jobs:
           # body links to the Frigate install_hailort.sh on the dev branch (the
           # canonical consumer per CLAUDE.md) so the human gating "Set as latest"
           # can confirm the build matches what Frigate is actually shipping.
-          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${HAILO_DRIVER} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER}' > release-notes.md <<'RELEASE_NOTES'
+          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${HAILO_DRIVER} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER} ${SHORT_KVER}' > release-notes.md <<'RELEASE_NOTES'
           ## Hailo-8 Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
 
           | Field | Value |
@@ -878,6 +885,8 @@ jobs:
           | Built on | `${RUNNER_IMAGE}` |
           | Source commit | [`${BUILD_SHA}`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
           | Frigate compatibility | [install_hailort.sh (dev branch)](https://github.com/blakeblackshear/frigate/blob/dev/docker/main/install_hailort.sh) — pinned HailoRT: `${HAILO_DRIVER}` |
+
+          This build targets kernel `${REAL_KVER}` and loads on any TrueNAS release shipping that exact kernel, not only ${TRUENAS_VERSION}. The README supported versions table lists the covered versions.
 
           **Target Device:** Hailo-8 AI Accelerator (PCIe). For Hailo-10/15, see [README](https://github.com/${REPO}#compatibility).
 
@@ -894,7 +903,7 @@ jobs:
 
           ### Install
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
           ```
 
           ### Verify
@@ -905,7 +914,7 @@ jobs:
 
           ### Uninstall
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-hailo${HAILO_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
           ```
 
           ### Checksums
@@ -950,8 +959,8 @@ jobs:
           # github.run_number is monotonic per workflow, so it also covers
           # the same-commit re-dispatch case (manual retry, fresh build
           # after a deleted release) where a SHA alone wouldn't change.
-          tag_name: v${{ needs.resolve.outputs.truenas_version }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-r${{ needs.build.outputs.run_number }}
-          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Hailo ${{ needs.resolve.outputs.hailo_driver_version }} (r${{ needs.build.outputs.run_number }})"
+          tag_name: k${{ needs.build.outputs.short_kver }}-hailo${{ needs.resolve.outputs.hailo_driver_version }}-r${{ needs.build.outputs.run_number }}
+          name: "Kernel ${{ needs.build.outputs.short_kver }} (TrueNAS ${{ needs.resolve.outputs.truenas_version }}) - Hailo ${{ needs.resolve.outputs.hailo_driver_version }} (r${{ needs.build.outputs.run_number }})"
           body_path: release-notes.md
           files: |
             hailo.raw
@@ -977,9 +986,9 @@ jobs:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
         run: |
           # A preview (BETA/RC) target always publishes as a prerelease, no
-          # matter what the dispatch says: the prerelease flag is the stable
-          # channel's primary lock against serving a beta build, and
-          # mark_latest must not be able to clear it.
+          # matter what the dispatch says: k-tags carry no BETA marker, so the
+          # prerelease flag is the stable channel's primary lock against
+          # serving a beta build, and mark_latest must not be able to clear it.
           IS_PREVIEW=false
           case "$TRUENAS_VERSION" in
             *-[Bb][Ee][Tt][Aa]*|*-[Rr][Cc]*) IS_PREVIEW=true ;;
@@ -1028,10 +1037,11 @@ jobs:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
           HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
           RUN_NUMBER: ${{ needs.build.outputs.run_number }}
+          SHORT_KVER: ${{ needs.build.outputs.short_kver }}
           IS_PREVIEW: ${{ steps.publish.outputs.is_preview }}
         with:
           script: |
-            const tag = `v${process.env.TRUENAS_VERSION}-hailo${process.env.HAILO_DRIVER}-r${process.env.RUN_NUMBER}`;
+            const tag = `k${process.env.SHORT_KVER}-hailo${process.env.HAILO_DRIVER}-r${process.env.RUN_NUMBER}`;
             const releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/${tag}`;
 
             // A pre-release TrueNAS target (BETA/RC) is the 26-beta preview
@@ -1105,6 +1115,7 @@ jobs:
                 ``,
                 `**Release:** [${tag}](${releaseUrl})`,
                 `<!-- release-tag: ${tag} -->`,
+                `<!-- preview-build: ${isPreview} -->`,
                 `**TrueNAS:** ${process.env.TRUENAS_VERSION}`,
                 `**HailoRT:** ${process.env.HAILO_DRIVER}`,
                 ``,
