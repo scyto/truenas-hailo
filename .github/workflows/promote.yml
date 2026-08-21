@@ -214,14 +214,8 @@ jobs:
             if (commits) changelog += `\n### Commits\n${commits}\n`;
             if (!prNotes && !commits) changelog += '\n_Initial release._\n';
 
-            // Only become "Latest" if this is the newest STABLE (non-prerelease)
-            // release, ranked by decideMakeLatest above. Promoting an OLDER
-            // build must not regress Latest: it still flips to a full
-            // (verified) release, but Latest stays on the newer one.
-            // (GitHub's make_latest:'legacy' picks by date, which would
-            // wrongly favour the just-promoted older build, so compare
-            // explicitly.)
-            // rels = all other non-draft releases
+            // Newest-stable decision: rationale sits with decideMakeLatest
+            // above. rels = all other non-draft releases.
             const { makeLatest, newest } = decideMakeLatest(release, rels);
 
             await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
