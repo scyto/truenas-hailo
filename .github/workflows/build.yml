@@ -520,6 +520,10 @@ jobs:
           # would otherwise pass vacuously and ship the unlocked driver this
           # check exists to block.
           MEMC=/tmp/hailort-drivers/linux/vdma/memory.c
+          if [ ! -r "$MEMC" ]; then
+            echo "::error title=find_vma-lock::${MEMC} not found or unreadable; the driver source layout moved. Update MEMC (and the patch) for the new driver source."
+            exit 1
+          fi
           # One awk pass owns the call-site pattern: zero matches and an
           # unguarded match both fail, so the pattern cannot drift apart
           # from its zero-match guard.
@@ -1024,6 +1028,7 @@ jobs:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
           HAILO_DRIVER: ${{ needs.resolve.outputs.hailo_driver_version }}
           RUN_NUMBER: ${{ needs.build.outputs.run_number }}
+          IS_PREVIEW: ${{ steps.publish.outputs.is_preview }}
         with:
           script: |
             const tag = `v${process.env.TRUENAS_VERSION}-hailo${process.env.HAILO_DRIVER}-r${process.env.RUN_NUMBER}`;
@@ -1034,12 +1039,9 @@ jobs:
             // route stable installs to a beta via install.sh), so they get a
             // distinct label that promote.yml ignores. Their hardware-test issue
             // is a verification record only: closing it does not promote.
-            // Canonical preview rule (keep in sync with install.sh's
-            // preview_tagged and gen-supported-versions.py's is_preview):
-            // preview iff the version contains -BETA or -RC as a substring,
-            // case-insensitive. No \b anchor: a dotless 26.0.0-RC1 must still
-            // classify as preview, matching the installer.
-            const isPreview = /-(?:BETA|RC)/i.test(process.env.TRUENAS_VERSION);
+            // Classified once, by the publish step; this step must agree with
+            // how the release was actually published.
+            const isPreview = process.env.IS_PREVIEW === 'true';
             const label = isPreview ? 'preview-hardware-test' : 'hardware-test';
             const labelDescription = isPreview
               ? 'Preview (TrueNAS beta) build verification, never auto-promoted to Latest'
