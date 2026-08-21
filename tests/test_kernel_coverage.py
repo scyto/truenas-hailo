@@ -18,11 +18,13 @@ SCRIPT = (Path(__file__).resolve().parents[1]
 K93 = "6.12.93-production+truenas"
 
 
-def run_coverage(releases, kver=K93, driver="4.21.0", raw=None):
+def run_coverage(releases, kver=K93, driver="4.21.0", version="25.10.6",
+                 raw=None):
     text = raw if raw is not None else json.dumps(releases)
     p = subprocess.run(["python3", str(SCRIPT)], input=text,
                        capture_output=True, text=True,
                        env={"NEW_KERNEL": kver, "CURRENT_DRIVER": driver,
+                            "NEW_VERSION": version,
                             "PATH": "/usr/bin:/bin"})
     if p.returncode != 0:
         raise AssertionError(f"script failed: {p.stderr}")
@@ -118,6 +120,26 @@ class KtagFallback(unittest.TestCase):
         rel = release("k6.12.93-hailo4.21.0-r50", "25.10.3",
                       kver="6.12.33-production+truenas")
         self.assertEqual(run_coverage([rel]), "")
+
+
+class TrainScope(unittest.TestCase):
+    # Cross-train releases are never served (install.sh's same_train guard),
+    # so they must not count as coverage either.
+
+    def test_promoted_other_train_same_kernel_never_covers(self):
+        out = run_coverage([release("v25.04.2-hailo4.21.0-r30", "25.04.2",
+                                    kver=K93)])
+        self.assertEqual(out, "")
+
+    def test_same_train_other_version_covers(self):
+        out = run_coverage([release("v25.10.5-hailo4.21.0-r40", "25.10.5",
+                                    kver=K93)], version="25.10.6")
+        self.assertEqual(out, "promoted v25.10.5-hailo4.21.0-r40")
+
+    def test_lost_body_ktag_passes_the_train_guard(self):
+        rel = dict(release("k6.12.93-hailo4.21.0-r50"), body="")
+        self.assertEqual(run_coverage([rel]),
+                         "promoted k6.12.93-hailo4.21.0-r50")
 
 
 class Pagination(unittest.TestCase):

@@ -4,7 +4,7 @@
 Called by check-releases.yml when a new TrueNAS stable version appears.
 Reads the repo's releases on stdin (gh api --paginate: one JSON array per
 page, concatenated) and reports what covers the kernel in $NEW_KERNEL for
-the driver in $CURRENT_DRIVER:
+the driver in $CURRENT_DRIVER, scoped to $NEW_VERSION's TrueNAS train:
 
     promoted <tag>   served by install.sh's stable channel: no build needed,
                      the tracked version may advance.
@@ -46,9 +46,13 @@ def main():
     kver = os.environ['NEW_KERNEL']
     short = kver.split('-')[0]
     driver = os.environ['CURRENT_DRIVER']
+    version = os.environ.get('NEW_VERSION', '')
     ker_re = re.compile(r'Target kernel\s*\|\s*`([^`]+)`')
     hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
     pre_re = re.compile(r'-(BETA|RC)', re.IGNORECASE)
+
+    def train_key(v):
+        return '.'.join(v.partition('-')[0].split('.')[:2])
 
     pending = None
     for r in data:
@@ -58,6 +62,10 @@ def main():
         body = r.get('body') or ''
         hdr = hdr_re.search(body)
         if pre_re.search(tag) or (hdr and pre_re.search(hdr.group(1))):
+            continue
+        # Mirror install.sh's same_train guard: a cross-train release is
+        # never served, so it must not count as coverage. No header passes.
+        if version and hdr and train_key(hdr.group(1)) != train_key(version):
             continue
         # Only builds of the current driver count: a driver bump must
         # rebuild every kernel (the dispatch condition handles that).
