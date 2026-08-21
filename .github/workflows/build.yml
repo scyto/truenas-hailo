@@ -520,22 +520,23 @@ jobs:
           # would otherwise pass vacuously and ship the unlocked driver this
           # check exists to block.
           MEMC=/tmp/hailort-drivers/linux/vdma/memory.c
-          MATCHES=$(grep -c 'vma = find_vma(current->mm' "$MEMC" || true)
-          if [ "$MATCHES" -eq 0 ]; then
-            echo "::error title=find_vma-lock::no 'vma = find_vma(current->mm' call site found in ${MEMC}; the lock gate cannot verify this driver version. Update the pattern (and the patch) for the new driver source."
-            grep -n 'find_vma' "$MEMC" || true
-            exit 1
-          fi
-          if ! awk '
-            /vma = find_vma\(current->mm/ { if (prev !~ /mmap_read_lock\(current->mm\)/) bad=1 }
+          # One awk pass owns the call-site pattern: zero matches and an
+          # unguarded match both fail, so the pattern cannot drift apart
+          # from its zero-match guard.
+          if ! COUNT=$(awk '
+            /vma = find_vma\(current->mm/ { n++; if (prev !~ /mmap_read_lock\(current->mm\)/) bad=1 }
             { prev=$0 }
-            END { exit bad }
-          ' "$MEMC"; then
-            echo "::error title=find_vma-lock::find_vma(current->mm,...) in ${MEMC} is not guarded by mmap_read_lock; refusing to ship a driver that triggers the rwsem.h:80 WARN/oops"
-            grep -n -B2 -A1 'vma = find_vma(current->mm' "$MEMC" || true
+            END { print n+0; exit (n == 0 || bad) }
+          ' "$MEMC"); then
+            if [ "${COUNT:-0}" -eq 0 ]; then
+              echo "::error title=find_vma-lock::no 'vma = find_vma(current->mm' call site found in ${MEMC}; the lock gate cannot verify this driver version. Update the pattern (and the patch) for the new driver source."
+            else
+              echo "::error title=find_vma-lock::find_vma(current->mm,...) in ${MEMC} is not guarded by mmap_read_lock; refusing to ship a driver that triggers the rwsem.h:80 WARN/oops"
+            fi
+            grep -n -B2 -A1 'find_vma' "$MEMC" || true
             exit 1
           fi
-          echo "OK: ${MATCHES} find_vma(current->mm,...) call site(s) guarded by mmap_read_lock"
+          echo "OK: ${COUNT} find_vma(current->mm,...) call site(s) guarded by mmap_read_lock"
 
       - name: Install kernel-matching GCC
         run: |
@@ -952,6 +953,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish the draft (prerelease gate, or Latest on override)
+        id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -967,6 +969,7 @@ jobs:
           case "$TRUENAS_VERSION" in
             *-[Bb][Ee][Tt][Aa]*|*-[Rr][Cc]*) IS_PREVIEW=true ;;
           esac
+          echo "is_preview=${IS_PREVIEW}" >> "$GITHUB_OUTPUT"
           # Unverified and preview builds publish as a PRERELEASE so GitHub
           # keeps them out of /releases/latest (and thus install.sh) until a
           # human promotes them; make_latest=false alone does not hold that
@@ -994,16 +997,17 @@ jobs:
             fi
           done
           if [ "$PUBLISHED" != "true" ]; then
-            # Delete the draft so a half-published release is not left behind;
-            # a re-run rebuilds it from scratch. Draft deletion also needs no
-            # tag cleanup (the tag is only created on publish).
-            echo "::error title=publish failed::could not publish draft release ${REL_ID} after 3 attempts; deleting the draft. Re-run the workflow to rebuild and publish."
-            gh api --method DELETE "repos/${REPO}/releases/${REL_ID}" || true
+            # Keep the draft: a PATCH can succeed server-side with a dropped
+            # response, and a delete would then remove a published release
+            # while its tag survives. The assets stay recoverable.
+            echo "::error title=publish failed::could not publish draft release ${REL_ID} after 3 attempts; the draft and its assets are kept at https://github.com/${REPO}/releases. Publish it by hand, or delete it and re-run."
             exit 1
           fi
 
       - name: Create hardware-test issue for auto-build
-        if: needs.resolve.outputs.mark_latest == 'false'
+        # A preview target forced to prerelease still needs its verification
+        # issue even when the dispatch said mark_latest=true.
+        if: needs.resolve.outputs.mark_latest == 'false' || steps.publish.outputs.is_preview == 'true'
         uses: actions/github-script@v9
         env:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
