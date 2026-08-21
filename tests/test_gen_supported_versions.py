@@ -109,6 +109,33 @@ class KernelRows(unittest.TestCase):
         self.assertEqual(row["tag"], "")
         self.assertEqual(row["pending_tag"], "")
 
+    def test_cross_train_release_does_not_fill_other_trains_kernel_row(self):
+        # install.sh's train guard refuses cross-train matches, so a kernel
+        # row only names releases from its own train.
+        two_train_map = {"trains": {
+            "Fangtooth": {"25.04.9": "6.12.91-production+truenas"},
+            "Goldeye": {"25.10.4": "6.12.91-production+truenas"},
+        }}
+        rows = rows_for([release("v25.10.4-hailo4.21.0-r40", "25.10.4",
+                                 "Goldeye", "6.12.91-production+truenas")],
+                        kernel_map=two_train_map)
+        ft = [r for r in rows if r["versions"] == "25.04.9"][0]
+        gd = [r for r in rows if r["versions"] == "25.10.4"][0]
+        self.assertEqual(gd["tag"], "v25.10.4-hailo4.21.0-r40")
+        self.assertEqual(ft["tag"], "")
+
+    def test_lost_body_ktag_fills_any_trains_row(self):
+        # No header train passes the guard everywhere, same as install.sh.
+        two_train_map = {"trains": {
+            "Fangtooth": {"25.04.9": "6.12.91-production+truenas"},
+            "Goldeye": {"25.10.4": "6.12.91-production+truenas"},
+        }}
+        rel = dict(release("k6.12.91-hailo4.21.0-r50"), body="")
+        rows = rows_for([rel], kernel_map=two_train_map)
+        for versions in ("25.04.9", "25.10.4"):
+            row = [r for r in rows if r["versions"] == versions][0]
+            self.assertEqual(row["tag"], "k6.12.91-hailo4.21.0-r50")
+
     def test_newest_kernel_row_first(self):
         rows = rows_for([])
         self.assertEqual(rows[0]["kver"], "6.12.91-production+truenas")

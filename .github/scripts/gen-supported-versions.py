@@ -169,10 +169,24 @@ def newest_per_kernel(releases_by_version, want_prerelease):
             if (r["prerelease"] != want_prerelease or not r["kver"]
                     or is_preview_version(r["version"])):
                 continue
-            cur = newest.get(r["kver"])
+            key = (r["kver"], r["train"])
+            cur = newest.get(key)
             if cur is None or r["published"] > cur["published"]:
-                newest[r["kver"]] = r
+                newest[key] = r
     return newest
+
+
+def for_train(newest, kver, train):
+    """The release install.sh serves for (kernel, train): its train guard
+    refuses cross-train matches, and a release with no header train passes
+    everywhere (lost-body k-tags, same rule as the installer)."""
+    best = None
+    for (k, t), r in newest.items():
+        if k != kver or (t and t != train):
+            continue
+        if best is None or r["published"] > best["published"]:
+            best = r
+    return best
 
 
 def kernel_winners(releases_by_version):
@@ -193,26 +207,26 @@ def pending_builds(releases_by_version):
 
 
 def build_rows(stable, preview, kernel_map, winners, pending=None):
-    """One row per known stable kernel (built or not), then stable releases
-    the kernel match cannot serve (single-version rows), then preview
-    releases."""
+    """One row per train's known stable kernel (built or not), then stable
+    releases the kernel match cannot serve (single-version rows), then
+    preview releases."""
     pending = pending or {}
     by_kernel = {}
     mapped_versions = set()
-    for train_versions in (kernel_map.get("trains") or {}).values():
+    for train, train_versions in (kernel_map.get("trains") or {}).items():
         for version, kver in train_versions.items():
-            by_kernel.setdefault(kver, []).append(version)
+            by_kernel.setdefault((train, kver), []).append(version)
             mapped_versions.add(version)
 
     keyed = []
-    for kver, versions in by_kernel.items():
+    for (train, kver), versions in by_kernel.items():
         for v in versions:
             r = stable.get(v)
             if r and r["kver"] and r["kver"] != kver:
                 print(f"WARNING: release {r['tag']} records kernel {r['kver']} "
                       f"but the kernel map says {kver} for {v}", file=sys.stderr)
-        r = winners.get(kver)
-        p = pending.get(kver) if r is None else None
+        r = for_train(winners, kver, train)
+        p = for_train(pending, kver, train) if r is None else None
         keyed.append((max(truenas_sort_key(v) for v in versions), {
             "channel": "Stable", "kver": kver,
             "versions": version_range(versions),
@@ -234,7 +248,7 @@ def build_rows(stable, preview, kernel_map, winners, pending=None):
             # A version the map does not know (older train, or a listing gap)
             # keeps its own row so it never drops off, but it names the
             # release the installer would deliver for its kernel.
-            w = winners.get(r["kver"], r)
+            w = for_train(winners, r["kver"], r["train"]) or r
             keyed.append((truenas_sort_key(version), {
                 "channel": "Stable", "kver": r["kver"], "versions": version,
                 "driver": w["driver"], "tag": w["tag"], "url": w["url"]}))
