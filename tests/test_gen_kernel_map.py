@@ -16,7 +16,7 @@ TRAINS = ["Fangtooth", "Goldeye"]
 ROOT_LISTING = """
 <a href="TrueNAS-SCALE-Dragonfish/">Dragonfish</a>
 <a href="./TrueNAS-SCALE-Fangtooth/">Fangtooth</a>
-<a href="TrueNAS-SCALE-Goldeye/?wrap=1">Goldeye</a>
+<a href="TrueNAS-SCALE-Goldeye">Goldeye</a>
 <a href="TrueNAS-13.0/">core</a>
 <a href="latest/">latest</a>
 """
@@ -49,6 +49,7 @@ def fixture_fetch(url):
 
 class DiscoverTrains(unittest.TestCase):
     def test_parses_scale_train_dirs_only(self):
+        # Goldeye's href has no trailing slash, matching the live top level.
         got = gkm.discover_trains(fetch=lambda url: ROOT_LISTING)
         self.assertEqual(got, ["Dragonfish", "Fangtooth", "Goldeye"])
 
@@ -114,6 +115,19 @@ class UpdateMap(unittest.TestCase):
                 "unresolved": {t: ["25.10.0"] for t in TRAINS}}
         gkm.update_map(data, fetch=fixture_fetch)
         self.assertEqual(data["unresolved"], {})
+
+    def test_empty_root_listing_falls_back_to_cached_trains(self):
+        # A format change or maintenance page must not silently freeze the
+        # map; cached trains are still refreshed.
+        def maintenance_fetch(url):
+            if url == gkm.ROOT:
+                return "<html>maintenance</html>"
+            return fixture_fetch(url)
+        data = {"trains": {t: {} for t in TRAINS}, "unresolved": {}}
+        gkm.update_map(data, fetch=maintenance_fetch)
+        for train in TRAINS:
+            self.assertEqual(data["trains"][train]["25.10.0"],
+                             "6.12.33-production+truenas")
 
     def test_listing_failure_keeps_cached_data(self):
         def broken(url):
