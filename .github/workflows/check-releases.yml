@@ -481,8 +481,12 @@ jobs:
         if: >-
           (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered != 'true') ||
           steps.hailo.outputs.changed == 'true'
+        env:
+          # Same composite as TRUENAS_CHANGED: under covered_pending the
+          # dispatch builds the tracked version, so resolve its runner.
+          TRUENAS_EFFECTIVE: ${{ steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true' }}
         run: |
-          if [ "${{ steps.truenas.outputs.changed }}" = "true" ]; then
+          if [ "$TRUENAS_EFFECTIVE" = "true" ]; then
             TRAIN="${{ steps.truenas.outputs.train }}"
             VERSION="${{ steps.truenas.outputs.version }}"
           else
